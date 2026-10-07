@@ -18,9 +18,10 @@ sys.path.insert(0, str(ROOT))
 
 from netease_organizer.classification_quality import (
     CONFLICT_REASON,
-    GENERIC_EVIDENCE_NOTES,
+    INCOMPLETE_EVIDENCE_REASON,
     LOW_SCORE_REASON,
     SCENE_RULES,
+    WEAK_EVIDENCE_REASON,
     diagnostic_strata,
     review_reasons,
     select_pilot,
@@ -92,7 +93,8 @@ def _summary(records, selected):
         "needs_review_count": sum(bool(review_reasons(record)) for record in records),
         "low_score_without_pending_count": sum(LOW_SCORE_REASON in review_reasons(record) and not record["pending_reasons"] for record in records),
         "conflict_without_pending_count": sum(CONFLICT_REASON in review_reasons(record) and not record["pending_reasons"] for record in records),
-        "generic_evidence_count": sum(record["evidence_note"] in GENERIC_EVIDENCE_NOTES for record in records),
+        "generic_evidence_count": sum(WEAK_EVIDENCE_REASON in review_reasons(record) for record in records),
+        "explicit_unverified_evidence_count": sum(INCOMPLETE_EVIDENCE_REASON in review_reasons(record) for record in records),
         "reason_counts": dict(sorted(reason_counts.items())),
         "diagnostic_layer_counts": dict(sorted(strata_counts.items())),
         "pilot_count": len(selected),

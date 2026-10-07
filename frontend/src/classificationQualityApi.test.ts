@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { postClassificationDraft } from './api';
+import { fetchClassification, postClassificationDraft } from './api';
 import { normalizeClassification } from './classificationData';
 
 const request = { offset: 0, query: '', dimension: 'all' as const, tag: '', review: 'conflict' as const };
@@ -19,6 +19,25 @@ function raw() {
 }
 afterEach(() => vi.unstubAllGlobals());
 describe('classification quality API boundary', () => {
+  it('echoes explicit draft basis and preserves draft summary and recording clues', () => {
+    const value = raw() as ReturnType<typeof raw> & Record<string, unknown>;
+    value.filters = { ...request, basis: 'draft' } as never;
+    value.quality = { ...value.quality, draft_summary: { pending_count: 0, unknown_style_count: 0, unknown_language_count: 0 } } as never;
+    value.records[0] = { ...value.records[0], recording_hints: ['现场版本线索'] } as never;
+    const parsed = normalizeClassification(value, { ...request, basis: 'draft' });
+    expect(parsed.filters.basis).toBe('draft');
+    expect(parsed.quality!.draft_summary!.pending_count).toBe(0);
+    expect(parsed.records[0].recording_hints).toEqual(['现场版本线索']);
+  });
+  it('does not accept an original projection in response to a draft basis request', () => {
+    expect(() => normalizeClassification(raw(), { ...request, basis: 'draft' })).toThrow();
+  });
+  it('appends basis only for an explicit draft GET and accepts the version filter', async () => {
+    const value = raw(); value.filters = { ...request, basis: 'draft', review: 'version' } as never;
+    const fetcher = vi.fn().mockResolvedValue({ ok: true, json: async () => value }); vi.stubGlobal('fetch', fetcher);
+    await fetchClassification('s', { ...request, basis: 'draft', review: 'version' });
+    expect(fetcher.mock.calls[0][0]).toContain('&review=version&basis=draft');
+  });
   it('retains quality provenance and review reasons while stripping private fields', () => {
     const value = raw();
     const parsed = normalizeClassification({ ...value, secret: 'PRIVATE', records: value.records.map((r) => ({ ...r, id: 'PRIVATE' })) }, request);

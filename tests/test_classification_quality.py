@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from netease_organizer.classification_quality import review_reasons, select_pilot
+from netease_organizer.classification_quality import review_reasons, select_pilot, version_hints, diagnostic_strata
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -83,6 +83,52 @@ class ClassificationQualityTests(unittest.TestCase):
             1, evidence_note="具体曲目、艺人与专辑的宽风格模型判断；已附逐段听辨证据"
         )), [])
         self.assertEqual(review_reasons(record(2, evidence_note=[])), [])
+
+    def test_generic_style_explanation_with_only_language_addendum_still_needs_review(self):
+        for suffix in (
+            '语言按具体演唱版本判定，不按歌曲标题或艺人国籍',
+            '吟唱使用构造语言，不能视为纯音乐',
+        ):
+            with self.subTest(suffix=suffix):
+                source = record(1, evidence_note='具体录音、艺人与专辑的宽风格模型判断；听歌场景为建议；' + suffix)
+                before = copy.deepcopy(source)
+                self.assertIn('风格或场景依据过于宽泛', review_reasons(source))
+                self.assertEqual(source, before)
+        self.assertIn('风格或场景依据过于宽泛', review_reasons(record(
+            2, evidence_note=' 具体曲目、艺人与专辑的宽风格模型判断。 ')))
+
+    def test_explicit_unverified_recording_note_is_not_hidden_by_high_score(self):
+        for note in ('模拟艺人的独立流行取向，录音细节待核',
+                     '模拟艺人旋律说唱取向，具体曲目待核',
+                     '了解此曲采样，采样语种留待核对。'):
+            with self.subTest(note=note):
+                source = record(1, style_judgment_score=.99, evidence_note=note)
+                self.assertEqual(review_reasons(source), ['分类依据明确标注待核对'])
+                self.assertIn('weak_evidence', diagnostic_strata(source))
+        self.assertEqual(review_reasons(record(2, evidence_note='具体曲目待核的问题已核对原专辑解决。')), [])
+        self.assertEqual(review_reasons(record(3, name='歌曲待核', evidence_note='已核对具体录音')), [])
+
+    def test_version_hints_cover_alternate_speed_edit_and_clip_recordings_without_changing_labels(self):
+        examples = {
+            '模拟曲目 (EXPO Ver.)': 'EXPO 版本',
+            '模拟曲目 (Speed Up Version)': '加速版本',
+            '模拟曲目 [Sped-Up]': '加速版本',
+            '模拟曲目 (Slowed + Reverb)': '减速版本',
+            '模拟曲目 (Radio Edit)': '剪辑或扩展版本',
+            '模拟曲目 (Extended Mix)': '剪辑或扩展版本',
+            '模拟曲目 (TV Size)': '短片段或电视截取版',
+            '模拟曲目（片段）': '短片段或电视截取版',
+            '模拟曲目 (Demo)': 'Demo 或试作版本',
+        }
+        for name, label in examples.items():
+            with self.subTest(name=name):
+                source = record(1, name=name)
+                before = copy.deepcopy(source)
+                self.assertIn(label, version_hints(source))
+                self.assertEqual(review_reasons(source), [])
+                self.assertEqual(source, before)
+        for title in ('Olive credit Speedway', 'Democracy', '编辑爱情', 'Expo night'):
+            self.assertEqual(version_hints(record(1, name=title)), [], title)
 
     def test_sampling_covers_sparse_labels_review_layers_and_recording_versions(self):
         records = [record(position) for position in range(1, 121)]
@@ -226,6 +272,18 @@ class ClassificationQualityScriptTests(unittest.TestCase):
             self.assertIsNone(entry["evaluation"]["verified_language"])
             self.assertEqual(entry["evaluation"]["evidence_sources"], [])
         self.assertEqual(self.source.read_bytes(), before)
+
+    def test_summary_counts_language_addenda_and_explicit_unverified_notes_consistently(self):
+        self.records[0]['evidence_note'] = '具体录音、艺人与专辑的宽风格模型判断；听歌场景为建议；语言按具体演唱版本判定，不按歌曲标题或艺人国籍'
+        self.records[1].update(style_judgment_score=.99, evidence_note='模拟艺人风格取向，具体录音待核')
+        self.write_source()
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        quality = json.loads((self.output / 'quality-report.json').read_text(encoding='utf-8'))
+        summary = quality['summary']
+        self.assertEqual(summary['generic_evidence_count'], 2)
+        self.assertEqual(summary['explicit_unverified_evidence_count'], 1)
+        self.assertEqual(summary['needs_review_count'], 5)
 
     def test_rerun_and_partial_existing_outputs_are_never_overwritten(self):
         for filename in ("quality-report.json", "pilot-review.json"):

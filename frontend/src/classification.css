@@ -77,6 +77,24 @@
 .classification-editor input:focus-visible,
 .classification-editor select:focus-visible { outline: 2px solid var(--red); outline-offset: 2px; }
 .classification-editor-error { color: #9c3838; font-size: 12px; line-height: 1.7; }
+.classification-basis-note { padding: 10px 14px; border: 1px solid #d9dfdf; border-radius: 8px; background: #f4f8f7; font-size: 12px; line-height: 1.8; }
+.classification-basis-note p { margin: 0; }
+.classification-recording-hints { margin-top: 10px; padding: 8px 12px; border-radius: 8px; background: #f3f1f7; font-size: 12px; line-height: 1.7; }
+.classification-recording-hints p { margin: 0; }
+.classification-recording-hints ul { margin: 5px 0 0; padding-left: 18px; }
+.classification-change-counts { padding-left: 0; list-style: none; }
+.classification-change-counts .classification-inline { margin: 0; }
+.classification-change-details { margin-top: 12px; padding: 14px; border: 1px solid #ded4c8; border-radius: 8px; background: #fff; }
+.classification-change-heading { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.classification-change-heading h3 { margin: 0; font-size: 13px; }
+.classification-change-details > label { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.classification-change-details select { padding: 8px; border: 1px solid var(--line); border-radius: 6px; background: #fff; font: inherit; }
+.classification-changed-tracks { padding-left: 24px; }
+.classification-changed-tracks li { display: list-item; padding: 10px 0; border-bottom: 1px solid #eee7de; }
+.classification-changed-tracks h4 { margin: 0; font-size: 12px; }
+.classification-changed-tracks p { margin: 4px 0; }
+.classification-changed-tracks dl { display: grid; grid-template-columns: 36px minmax(0, 1fr); gap: 4px 8px; }
+.classification-changed-tracks dd { margin: 0; }
 .classification-panel[hidden],
 .classification-panel [role='tabpanel'][hidden] {
   display: none;

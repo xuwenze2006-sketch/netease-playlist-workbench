@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { ClassificationCorrection, ClassificationDraftRequest, ClassificationQuality, ClassificationRecord } from './types';
 import { LANGUAGE_LABELS, SCENE_LABELS, STYLE_LABELS, validCorrection } from './classificationQuality';
+import { ClassificationChanges } from './ClassificationChanges';
 
 type Props = {
   track: ClassificationRecord;
@@ -107,7 +108,7 @@ export function ClassificationEditor({ track, quality, disabled, onSubmit }: Pro
   );
 }
 
-export function ClassificationQualitySummary({ quality, onReview }: { quality: ClassificationQuality; onReview: (review: 'needs_review' | 'pilot' | 'draft') => void }) {
+export function ClassificationQualitySummary({ quality, onReview, disabled = false }: { quality: ClassificationQuality; disabled?: boolean; onReview: (review: 'needs_review' | 'pilot' | 'draft') => void }) {
   return (
     <section className="classification-quality" aria-label="分类质量与修正草稿">
       <div className="classification-quality-heading">
@@ -118,12 +119,13 @@ export function ClassificationQualitySummary({ quality, onReview }: { quality: C
         <button className="classification-inline" disabled={!quality.changed_count} onClick={() => onReview('draft')}>查看本地修正</button>
       </div>
       <p>草稿尚未写入网易云歌单；下方对照展示现有分类与本地修正。</p>
+      <p>刷新、筛选、分页或保存可能关闭未保存编辑，请先保存正在填写的修正。</p>
       {quality.draft_status === 'stale' && <p className="classification-editor-error" role="status">来源记录已变化，已有草稿需要重新核对，暂时无法保存修正。</p>}
       {quality.draft_status === 'unavailable' && <p className="classification-editor-error" role="status">本地修正草稿暂不可用，请检查记录后重新读取。</p>}
       {quality.playlist_changes.length > 0 && (
         <details className="classification-change-preview">
           <summary>查看歌单增删预览</summary>
-          <ul>{quality.playlist_changes.map((change) => <li key={change.name}><strong>{change.name}</strong><span>加入 {change.added_count} 首</span><span>移出 {change.removed_count} 首</span></li>)}</ul>
+          <ClassificationChanges quality={quality} disabled={disabled} />
         </details>
       )}
       {quality.rules.length > 0 && (

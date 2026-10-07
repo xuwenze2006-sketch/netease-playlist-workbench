@@ -132,7 +132,7 @@ class WebClassificationTests(unittest.TestCase):
         self.assertEqual(set(result['records'][0]), {'position', 'name', 'artists', 'styles', 'scenes', 'language',
                                                     'pending_reasons', 'evidence_note', 'language_evidence_note',
                                                     'record_key', 'style_judgment_score', 'review_note',
-                                                    'needs_review', 'review_reasons', 'draft'})
+                                                    'needs_review', 'review_reasons', 'recording_hints', 'draft'})
         self.assertEqual(result['options']['style'], ['流行抒情', '摇滚与独立', '待辨识'])
         self.assertTrue(all(row['key'] is None for row in result['playlists']))
         self.assertEqual(result['playlists'][-1]['dimension'], 'review')
@@ -144,7 +144,7 @@ class WebClassificationTests(unittest.TestCase):
         result = self.view(query='ＴＡＹＬＯＲ', dimension='scene', tag='通勤散步', limit=1)
         self.assertEqual([row['position'] for row in result['records']], [1])
         self.assertEqual(result['pagination'], {'offset': 0, 'limit': 1, 'total': 1, 'next_offset': None})
-        self.assertEqual(result['filters'], {'query': 'ＴＡＹＬＯＲ', 'dimension': 'scene', 'tag': '通勤散步', 'review': 'all'})
+        self.assertEqual(result['filters'], {'query': 'ＴＡＹＬＯＲ', 'dimension': 'scene', 'tag': '通勤散步', 'review': 'all', 'basis': 'original'})
         self.assertEqual(self.view(query='蔡健雅')['records'][0]['position'], 2)
         self.assertEqual([row['position'] for row in self.view(review='pending', limit=1, offset=1)['records']], [4])
         self.assertEqual(self.view(dimension='language', tag='英语', review='pending')['pagination']['total'], 0)

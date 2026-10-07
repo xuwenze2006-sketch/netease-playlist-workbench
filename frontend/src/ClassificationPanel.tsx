@@ -52,6 +52,9 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
   const available = currentData?.status === 'available';
   const summary = data?.status === 'available' ? data.summary : null;
   const stale = !!data && (failed || waiting);
+  const draftBasis = selection.basis === 'draft';
+  const applyingDraft = draftBasis && data?.quality?.draft_status === 'ready';
+  const draftCounts = applyingDraft ? data?.quality?.draft_summary : null;
 
   useEffect(() => {
     if (!active) {
@@ -155,13 +158,21 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
     setPageNotice('');
     setSelection((value) => ({ ...value, ...change, query: input.trim(), offset: 0 }));
   }
-  function clear(pending = false) {
+  function clear(pending = false, basis?: Selection['basis']) {
     pageIntent.current = null;
     refreshRequested.current = false;
     setPageNotice('');
     setInput('');
-    setSelection({ ...INITIAL, review: pending ? 'pending' : 'all' });
+    setSelection({ ...INITIAL, review: pending ? 'pending' : 'all', ...(basis ? { basis } : {}) });
     if (pending) setView('songs');
+  }
+  function openQualityReview(review: 'needs_review' | 'pilot' | 'draft') {
+    pageIntent.current = null;
+    refreshRequested.current = false;
+    setPageNotice('');
+    setInput('');
+    setSelection({ ...INITIAL, basis: selection.basis ?? 'original', review });
+    setView('songs');
   }
   function chooseTag(dimension: Dimension, tag: string) {
     if (!data?.options[dimension].includes(tag)) return;
@@ -241,6 +252,7 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
   const tags = selection.dimension === 'all' ? [] : (data?.options[selection.dimension] ?? []);
   const removedTag = !!selection.tag && !tags.includes(selection.tag);
   const filterText = [
+    ...(data?.quality ? [draftBasis ? '修正后分类' : '原分类'] : []),
     selection.dimension === 'all'
       ? '全部维度'
       : `${DIMENSIONS[selection.dimension]}${selection.tag ? ` · ${selection.tag}` : ' · 全部标签'}`,
@@ -316,18 +328,21 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
       {summary && (
         <section className="classification-stats" aria-label="分类结果概览">
           {[
-            ['来源曲目', summary.source_count],
-            ['已覆盖', summary.covered_count],
-            ['分类歌单', summary.playlist_count],
-            ['待辨识', summary.pending_count],
-            ['风格待辨识', summary.unknown_style_count],
-            ['语言待辨识', summary.unknown_language_count],
+            [applyingDraft ? '原分类曲目' : '来源曲目', summary.source_count],
+            [applyingDraft ? '原分类已覆盖' : '已覆盖', summary.covered_count],
+            [applyingDraft ? '原分类歌单' : '分类歌单', summary.playlist_count],
+            [applyingDraft ? '修正后待辨识' : '待辨识', applyingDraft ? draftCounts?.pending_count ?? '—' : summary.pending_count],
+            [applyingDraft ? '修正后风格待辨识' : '风格待辨识', applyingDraft ? draftCounts?.unknown_style_count ?? '—' : summary.unknown_style_count],
+            [applyingDraft ? '修正后语言待辨识' : '语言待辨识', applyingDraft ? draftCounts?.unknown_language_count ?? '—' : summary.unknown_language_count],
           ].map(([label, count]) => (
             <div key={label}>
               <span>{label}</span>
-              <strong>{Number(count).toLocaleString('zh-CN')}</strong>
-              {label === '待辨识' && (
-                <button className="classification-inline" onClick={() => clear(true)}>
+              <strong>{count === '—' ? count : Number(count).toLocaleString('zh-CN')}</strong>
+              {(label === '待辨识' || label === '修正后待辨识') && (
+                <button className="classification-inline" onClick={() => {
+                  if (applyingDraft) clear(true, 'draft');
+                  else clear(true);
+                }}>
                   查看全部待辨识
                 </button>
               )}
@@ -336,8 +351,16 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
         </section>
       )}
       {data?.status === 'available' && data.quality && (
-        <ClassificationQualitySummary quality={data.quality} onReview={(review) => { filter({ review }); setView('songs'); }} />
+        <ClassificationQualitySummary quality={data.quality} disabled={waiting || failed || !active || draftSubmitting}
+          onReview={openQualityReview} />
       )}
+      {draftBasis && data?.quality && !applyingDraft && <div className="classification-basis-note" role="status">
+        <p>修正草稿不可应用，当前回退原分类。请核对草稿来源后再使用修正后分类。</p>
+        <button className="classification-inline" onClick={() => filter({ basis: 'original' })}>返回原分类</button>
+      </div>}
+      {draftBasis && applyingDraft && <p className="classification-basis-note">
+        歌曲标签与待辨识筛选采用修正后分类；来源曲目、覆盖数和分类歌单数量仍为原统计，草稿尚未写入账号。
+      </p>}
       {failed && data?.status === 'available' && (
         <div className="classification-stale" role="alert">
           <strong>重新读取未完成，当前保留上次读取的旧记录。</strong>
@@ -397,6 +420,12 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
                 </button>
               )}
             </label>
+            {data?.quality && <label>分类依据
+              <select aria-label="分类依据" value={selection.basis ?? 'original'}
+                onChange={(event) => filter({ basis: event.target.value as Selection['basis'] })}>
+                <option value="original">原分类</option><option value="draft">修正后分类</option>
+              </select>
+            </label>}
             <label>
               分类维度
               <select
@@ -482,7 +511,12 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
                 </p>
                 {currentData.records.length ? (
                   <div className="classification-track-list">
-                    {currentData.records.map((track) => (
+                    {currentData.records.map((track) => {
+                      const displayed = applyingDraft && track.draft ? track.draft : track;
+                      const pending = applyingDraft && track.draft
+                        ? track.draft.styles.includes('待辨识') || track.draft.language === '待辨识'
+                        : track.pending_reasons.length > 0;
+                      return (
                       <article className="classification-track" key={currentData.quality
                         ? `${currentData.quality.source_version}:${currentData.quality.revision}:${track.record_key}`
                         : track.position}>
@@ -493,20 +527,24 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
                             {track.artists || '歌手资料未记录'}
                           </p>
                           <div className="classification-tags">
-                            {track.scenes.map((tag) => trackTag('scene', tag))}
-                            {track.styles.map((tag) => trackTag('style', tag))}
-                            {trackTag('language', track.language || '待辨识')}
-                            {track.pending_reasons.length > 0 && (
+                            {displayed.scenes.map((tag) => trackTag('scene', tag))}
+                            {displayed.styles.map((tag) => trackTag('style', tag))}
+                            {trackTag('language', displayed.language || '待辨识')}
+                            {pending && (
                               <span className="pending-tag">待辨识</span>
                             )}
                           </div>
                           {track.needs_review && <div className="classification-review-reasons">
-                            <strong>需复核</strong>
+                            <strong>{applyingDraft && track.draft ? '原分类复核提示' : '需复核'}</strong>
                             <ul>{track.review_reasons?.map((reason) => <li key={reason}>{reason}</li>)}</ul>
                           </div>}
                           {track.style_judgment_score !== undefined && <p className="classification-score">
                             模型自评分：{track.style_judgment_score === null ? '未记录' : track.style_judgment_score.toFixed(2)}（未经校准）
                           </p>}
+                          {!!track.recording_hints?.length && <div className="classification-recording-hints">
+                            <p>标题线索，尚未确认录音版本：</p>
+                            <ul>{track.recording_hints.map((hint) => <li key={hint}>{hint}</li>)}</ul>
+                          </div>}
                           <details className="classification-evidence">
                             <summary>查看分类依据</summary>
                             <p>{track.evidence_note || '未记录风格或场景判断依据。'}</p>
@@ -524,7 +562,7 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
                             onSubmit={submitDraft} />}
                         </div>
                       </article>
-                    ))}
+                    ); })}
                   </div>
                 ) : (
                   <div className="classification-empty">
@@ -645,7 +683,7 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
       <section className="classification-source" aria-label="分类记录来源">
         <div>
           <Icon name="file" size={19} />
-          <strong>本地分类记录</strong>
+          <strong>{draftBasis ? '原分类记录来源' : '本地分类记录'}</strong>
           <span
             className={`status-pill ${!stale && data?.verification === 'verified' ? 'success' : ''}`}
           >

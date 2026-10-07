@@ -79,7 +79,7 @@ class ClassificationHttpTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(data['status'], 'not_loaded')
         reader.assert_called_once_with(self.project, offset=50, limit=20, query='JJ',
-                                       dimension='style', tag='Pop', review='pending')
+                                           dimension='style', tag='Pop', review='pending', basis='original')
         self.assertEqual(self.controller.calls, [('doctor', {})])
         self.assertEqual(self.controller.prepared, [])
         self.assertIsNone(self.server.application.state()['job'])
@@ -100,7 +100,7 @@ class ClassificationHttpTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(data, {'status': 'not_loaded'})
         reader.assert_called_once_with(self.project, offset=50, limit=20, query='JJ',
-                                       dimension='style', tag='Pop', review='pending')
+                                           dimension='style', tag='Pop', review='pending', basis='original')
         self.assertEqual(self.controller.calls, [('doctor', {})])
         self.assertIsNone(self.server.application.state()['job'])
 

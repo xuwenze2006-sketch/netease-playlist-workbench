@@ -7,6 +7,7 @@ export const LANGUAGE_LABELS = ['国语', '粤语', '英语', '日语', '韩语'
 export const REVIEW_LABELS: Record<ClassificationReview, string> = {
   all: '全部曲目', pending: '待辨识', needs_review: '全部需复核', conflict: '证据冲突',
   low_confidence: '低把握', weak_evidence: '依据不足', pilot: '试点样本', draft: '已有本地修正',
+  version: '版本线索',
 };
 
 function safeText(value: unknown, empty = false): value is string {

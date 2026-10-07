@@ -8,10 +8,13 @@ import type {
   ClassificationQuery,
   ClassificationDraftRequest,
   ClassificationDraftResponse,
+  ClassificationChangesPage,
+  ClassificationChangesQuery,
 } from './types';
 import { normalizeLocalTracks, normalizeState } from './normalize';
 import { normalizeClassification, validClassificationQuery } from './classificationData';
 import { validDraftRequest } from './classificationQuality';
+import { normalizeClassificationChanges, validChangesQuery } from './classificationChangesData';
 
 export class LocalApiError extends Error {
   readonly acceptanceUnknown: boolean;
@@ -138,13 +141,22 @@ export async function fetchClassification(
 ): Promise<ClassificationPage> {
   if (!validClassificationQuery(options) || typeof refreshLocalRecords !== 'boolean') throw new LocalApiError('本地分类查询条件无效，请重新选择筛选条件。');
   const { offset, query, dimension, tag, review } = options;
-  const path = `/api/classification?offset=${offset}&limit=50&q=${encodeURIComponent(query)}&dimension=${dimension}&tag=${encodeURIComponent(tag)}&review=${review}${refreshLocalRecords ? '&refresh=local' : ''}`;
+  const path = `/api/classification?offset=${offset}&limit=50&q=${encodeURIComponent(query)}&dimension=${dimension}&tag=${encodeURIComponent(tag)}&review=${review}${options.basis === 'draft' ? '&basis=draft' : ''}${refreshLocalRecords ? '&refresh=local' : ''}`;
   const value = await requestJson(session, path, undefined, signal);
   try {
     return normalizeClassification(value, options);
   } catch {
     throw new LocalApiError('本地分类资料格式不完整，请重试或检查本地记录。');
   }
+}
+
+export async function fetchClassificationChanges(session: string, options: ClassificationChangesQuery, signal?: AbortSignal): Promise<ClassificationChangesPage> {
+  if (!validChangesQuery(options)) throw new LocalApiError('歌单变动查询条件无效，请刷新分类记录后重试。');
+  const { playlist, source_version, revision, offset, change } = options;
+  const path = `/api/classification/changes?playlist=${encodeURIComponent(playlist)}&source_version=${source_version}&revision=${revision}&offset=${offset}&limit=50&change=${change}`;
+  const value = await requestJson(session, path, undefined, signal);
+  try { return normalizeClassificationChanges(value, options); }
+  catch { throw new LocalApiError('歌单变动资料格式或修订版本不匹配，请刷新分类记录后重新核对。'); }
 }
 
 export async function postClassificationDraft(

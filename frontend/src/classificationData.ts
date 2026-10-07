@@ -34,7 +34,8 @@ export function validClassificationQuery(query: ClassificationQuery): boolean {
   try {
     integer(query.offset);
     text(query.query, 160, true); text(query.tag, 160, true);
-    return ['all', 'scene', 'style', 'language'].includes(query.dimension) && Object.hasOwn(REVIEW_LABELS, query.review);
+    return ['all', 'scene', 'style', 'language'].includes(query.dimension) && Object.hasOwn(REVIEW_LABELS, query.review) &&
+      (query.basis === undefined || ['original', 'draft'].includes(query.basis));
   } catch { return false; }
 }
 export function normalizeClassification(value: unknown, request: ClassificationQuery): ClassificationPage {
@@ -44,6 +45,8 @@ export function normalizeClassification(value: unknown, request: ClassificationQ
     !['verified', 'local_only'].includes(root.verification as string)) return fail();
   const filters = object(root.filters);
   for (const key of ['query', 'dimension', 'tag', 'review'] as const) if (filters[key] !== request[key]) return fail();
+  const basis = filters.basis ?? 'original';
+  if (!['original', 'draft'].includes(basis as string) || basis !== (request.basis ?? 'original')) return fail();
   const paging = object(root.pagination);
   const offset = integer(paging.offset), limit = integer(paging.limit, 100), total = integer(paging.total);
   if (offset !== request.offset || limit !== 50) return fail();
@@ -79,6 +82,13 @@ export function normalizeClassification(value: unknown, request: ClassificationQ
     quality = { source_version: version, draft_status: raw.draft_status as ClassificationQuality['draft_status'],
       revision: integer(raw.revision, Number.MAX_SAFE_INTEGER), changed_count: integer(raw.changed_count), review_count: integer(raw.review_count),
       pilot_positions: pilot, playlist_changes: changes, rules };
+    if (raw.draft_summary !== undefined) {
+      const summary = object(raw.draft_summary);
+      quality.draft_summary = { pending_count: integer(summary.pending_count),
+        unknown_style_count: integer(summary.unknown_style_count), unknown_language_count: integer(summary.unknown_language_count) };
+      if (quality.draft_summary.unknown_style_count > quality.draft_summary.pending_count ||
+        quality.draft_summary.unknown_language_count > quality.draft_summary.pending_count) return fail();
+    }
   }
   const records = array(root.records, 50).map((value) => {
     const row = object(value);
@@ -87,7 +97,8 @@ export function normalizeClassification(value: unknown, request: ClassificationQ
     const record = { position, name: text(row.name), artists: text(row.artists, 2048, true),
       styles: texts(row.styles), scenes: texts(row.scenes), language: text(row.language, 160),
       pending_reasons: texts(row.pending_reasons, 16), evidence_note: text(row.evidence_note, 2048, true),
-      language_evidence_note: text(row.language_evidence_note, 2048, true) };
+      language_evidence_note: text(row.language_evidence_note, 2048, true),
+      ...(row.recording_hints !== undefined ? { recording_hints: texts(row.recording_hints, 16) } : {}) };
     if (!quality) return record;
     const recordKey = text(row.record_key, 32);
     const score = row.style_judgment_score;
@@ -116,7 +127,8 @@ export function normalizeClassification(value: unknown, request: ClassificationQ
       summary.playlist_count !== playlists.length || total > summary.source_count ||
       records.some((r) => r.position > summary!.source_count)) return fail();
     if (quality && (quality.changed_count > summary.source_count || quality.review_count > summary.source_count ||
-      quality.pilot_positions.some((v) => v > summary!.source_count))) return fail();
+      quality.pilot_positions.some((v) => v > summary!.source_count) ||
+      quality.draft_summary && quality.draft_summary.pending_count > summary.source_count)) return fail();
   }
   const updated = timestamp(root.updated_at), verified = timestamp(root.verified_at);
   if (root.status === 'available') {
@@ -128,6 +140,6 @@ export function normalizeClassification(value: unknown, request: ClassificationQ
   return { status: root.status as ClassificationPage['status'], source: 'local_record',
     verification: root.verification as ClassificationPage['verification'], updated_at: updated, verified_at: verified,
     summary, options: safeOptions, playlists, filters: { query: request.query, dimension: request.dimension,
-      tag: request.tag, review: request.review }, pagination: { offset, limit, total, next_offset: expectedNext }, records,
+      tag: request.tag, review: request.review, ...(filters.basis !== undefined || request.basis !== undefined ? { basis: basis as 'original' | 'draft' } : {}) }, pagination: { offset, limit, total, next_offset: expectedNext }, records,
     ...(quality ? { quality } : {}) };
 }

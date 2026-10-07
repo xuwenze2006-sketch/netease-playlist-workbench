@@ -17,8 +17,11 @@ from .classification_execution import (
     _encoded, _journal, _result, plan_digest, validate_plan,
 )
 from .classification_planning import LANGUAGES, SCENES, STYLES
-from .classification_drafts import DraftConflict, DraftError, load_draft, mutate_draft
-from .classification_quality import SCENE_RULES, review_reasons, select_pilot
+from .classification_drafts import DraftConflict, DraftError, MAX_REVISION, load_draft, mutate_draft
+from .classification_quality import (
+    SCENE_RULES, LOW_SCORE_REASON, WEAK_EVIDENCE_REASON, INCOMPLETE_EVIDENCE_REASON,
+    review_reasons, select_pilot, version_hints,
+)
 
 
 MAX_REPORT_BYTES = 16 * 1024 * 1024
@@ -177,20 +180,21 @@ def _load(project, name, maximum):
     return value, before[4] / 10**9
 
 
-def _parameters(offset, limit, query, dimension, tag, review):
+def _parameters(offset, limit, query, dimension, tag, review, basis='original'):
     if (type(offset) is not int or not 0 <= offset <= 10000
             or type(limit) is not int or not 1 <= limit <= 100
             or type(dimension) is not str or dimension not in ('all', *_DIMENSIONS)
             or type(review) is not str or review not in (
                 'all', 'pending', 'needs_review', 'conflict', 'low_confidence',
-                'weak_evidence', 'pilot', 'draft')):
+                'weak_evidence', 'pilot', 'draft', 'version')
+            or type(basis) is not str or basis not in ('original', 'draft')):
         raise ValueError('分类筛选参数不兼容。')
     try:
         _text(query, 160, empty=True)
         _text(tag, 160, empty=True)
     except _Invalid:
         raise ValueError('分类筛选参数不兼容。') from None
-    return {'dimension': dimension, 'tag': tag, 'review': review, 'query': query}
+    return {'dimension': dimension, 'tag': tag, 'review': review, 'query': query, 'basis': basis}
 
 
 def _empty(status, filters, offset, limit):
@@ -260,6 +264,7 @@ def _report(raw, plan):
                             'account': plan['account_id'], 'track': ident})).hexdigest()[:32]})
         records[-1]['review_reasons'] = review_reasons(records[-1])
         records[-1]['needs_review'] = bool(records[-1]['review_reasons'])
+        records[-1]['recording_hints'] = version_hints(records[-1])
         for dimension, labels in (('scene', scenes), ('style', styles), ('language', [language])):
             for label in labels:
                 if label in ('待辨识', '器乐或配乐录音'):
@@ -389,24 +394,47 @@ def _fold(value):
     return unicodedata.normalize('NFKC', value).casefold()
 
 
+def _pending_labels(labels):
+    return ((['风格待辨识'] if labels['styles'] == ['待辨识'] else [])
+            + (['语言待辨识'] if labels['language'] == '待辨识' else []))
+
+
+def _filter_labels(row, basis):
+    return row['draft'] if basis == 'draft' and row['draft'] is not None else row
+
+
+def _options(records, basis):
+    present = {dim: set() for dim in _DIMENSIONS}
+    for row in records:
+        labels = _filter_labels(row, basis)
+        present['scene'].update(labels['scenes'])
+        present['style'].update(labels['styles'])
+        present['language'].add(labels['language'])
+    return {dim: [label for label in _LABELS[dim] if label in present[dim]] for dim in _DIMENSIONS}
+
+
 def _matches(row, filters, pilot_positions=()):
-    if filters['review'] == 'pending' and not row['pending_reasons']:
+    effective = _filter_labels(row, filters['basis'])
+    if filters['review'] == 'pending' and not _pending_labels(effective):
         return False
     if filters['review'] == 'needs_review' and not row['needs_review']:
         return False
     if filters['review'] == 'conflict' and not row['review_note']:
         return False
-    if filters['review'] == 'low_confidence' and '风格判断把握较低' not in row['review_reasons']:
+    if filters['review'] == 'low_confidence' and LOW_SCORE_REASON not in row['review_reasons']:
         return False
-    if filters['review'] == 'weak_evidence' and '风格或场景依据过于宽泛' not in row['review_reasons']:
+    if filters['review'] == 'weak_evidence' and not any(
+            reason in row['review_reasons'] for reason in (WEAK_EVIDENCE_REASON, INCOMPLETE_EVIDENCE_REASON)):
         return False
     if filters['review'] == 'pilot' and row['position'] not in pilot_positions:
         return False
     if filters['review'] == 'draft' and row['draft'] is None:
         return False
+    if filters['review'] == 'version' and not row['recording_hints']:
+        return False
     tag, dimension = filters['tag'], filters['dimension']
     if tag:
-        labels = {'scene': row['scenes'], 'style': row['styles'], 'language': [row['language']]}
+        labels = {'scene': effective['scenes'], 'style': effective['styles'], 'language': [effective['language']]}
         dimensions = _DIMENSIONS if dimension == 'all' else (dimension,)
         if not any(tag in labels[dim] for dim in dimensions):
             return False
@@ -454,7 +482,9 @@ def _memberships(labels):
 
 def _with_draft(project, projection):
     """Drafts are read on every query, separate from immutable source caching."""
-    result = copy.deepcopy(projection)
+    # Only the response page is deep-copied. Cached source labels remain untouched.
+    result = {**projection, 'quality': copy.deepcopy(projection['quality']),
+              'records': [{**row} for row in projection['records']]}
     quality = result['quality']
     draft = load_draft(project, quality['source_version'], result['records'])
     quality.update(draft_status=draft['status'], revision=draft['revision'],
@@ -472,6 +502,11 @@ def _with_draft(project, projection):
     quality['playlist_changes'] = [{'name': name, 'added_count': added[name],
                                     'removed_count': removed[name]}
                                    for name in sorted(set(added) | set(removed))]
+    labels = [_filter_labels(row, 'draft') for row in result['records']]
+    quality['draft_summary'] = {
+        'pending_count': sum(bool(_pending_labels(row)) for row in labels),
+        'unknown_style_count': sum(row['styles'] == ['待辨识'] for row in labels),
+        'unknown_language_count': sum(row['language'] == '待辨识' for row in labels)}
     return result
 
 
@@ -497,9 +532,10 @@ def save_local_classification_draft(project, request):
         raise DraftError('classification source unavailable') from None
 
 
-def build_local_classification(project, *, offset=0, limit=50, query='', dimension='all', tag='', review='all'):
+def build_local_classification(project, *, offset=0, limit=50, query='', dimension='all', tag='',
+                               review='all', basis='original'):
     """Display paired local classification records, with no account or CLI access."""
-    filters = _parameters(offset, limit, query, dimension, tag, review)
+    filters = _parameters(offset, limit, query, dimension, tag, review, basis)
     fallback = _empty('unavailable', filters, offset, limit)
     cache_project = None
     try:
@@ -513,6 +549,8 @@ def build_local_classification(project, *, offset=0, limit=50, query='', dimensi
             result = _empty('not_loaded', filters, offset, limit)
         else:
             visible = _with_draft(cache_project, projection)
+            if basis == 'draft':
+                visible['options'] = _options(visible['records'], basis)
             pilot_positions = set(visible['quality']['pilot_positions'])
             selected = [row for row in visible['records'] if _matches(row, filters, pilot_positions)]
             total = len(selected)
@@ -525,6 +563,89 @@ def build_local_classification(project, *, offset=0, limit=50, query='', dimensi
         if not cached and projection is not None:
             _remember_projection(cache_project, generation, projection)
         return result
+    except (OSError, ValueError, TypeError, KeyError, UnicodeError, RecursionError, ClassificationError):
+        if cache_project is not None:
+            _forget_projection(cache_project)
+        return fallback
+
+
+def _change_parameters(playlist, source_version, revision, offset, limit, change):
+    names = {'分类 · 待辨识'}
+    names.update('风格 · ' + label for label in STYLES.values())
+    names.update('场景 · ' + label for label in SCENES.values())
+    names.update('语言 · ' + label for label in LANGUAGES.values())
+    if (type(playlist) is not str or playlist not in names
+            or type(source_version) is not str or re.fullmatch(r'[a-fA-F0-9]{64}', source_version) is None
+            or type(revision) is not int or not 0 <= revision <= MAX_REVISION
+            or type(offset) is not int or not 0 <= offset <= 10000
+            or type(limit) is not int or not 1 <= limit <= 100
+            or type(change) is not str or change not in ('all', 'added', 'removed')):
+        raise ValueError('分类变更查询参数不兼容。')
+
+
+def _empty_changes(status, playlist, change, offset, limit, *, source_version=None,
+                   revision=0, draft_status='unavailable'):
+    return {'status': status, 'source': 'local_correction_draft', 'source_version': source_version,
+            'revision': revision, 'draft_status': draft_status, 'playlist': playlist,
+            'filters': {'change': change}, 'counts': {'added': 0, 'removed': 0},
+            'pagination': {'offset': offset, 'limit': limit, 'total': 0, 'next_offset': None}, 'records': []}
+
+
+def build_local_classification_changes(project, *, playlist, source_version, revision,
+                                       offset=0, limit=50, change='all'):
+    """Preview a version-bound local draft's per-song playlist changes."""
+    _change_parameters(playlist, source_version, revision, offset, limit, change)
+    fallback = _empty_changes('unavailable', playlist, change, offset, limit)
+    cache_project = None
+    try:
+        cache_project = Path(project).resolve()
+        generation = _cache_generation(cache_project)
+        projection = _cached_projection(cache_project, generation)
+        cached = projection is not None
+        if not cached:
+            projection = _build_projection(cache_project)
+        if projection is None:
+            result = _empty_changes('not_loaded', playlist, change, offset, limit)
+        else:
+            current_version = projection['quality']['source_version']
+            if source_version.lower() != current_version:
+                raise DraftConflict('classification source changed')
+            draft = load_draft(cache_project, current_version, projection['records'])
+            if revision != draft['revision']:
+                raise DraftConflict('classification draft changed')
+            result = _empty_changes('available' if draft['status'] == 'ready' else 'unavailable',
+                                    playlist, change, offset, limit, source_version=current_version,
+                                    revision=draft['revision'], draft_status=draft['status'])
+            if draft['status'] == 'ready':
+                rows = []
+                for row in projection['records']:
+                    edit = draft['edits'].get(row['record_key'])
+                    if edit is None:
+                        continue
+                    before, after = playlist in _memberships(edit['before']), playlist in _memberships(edit['after'])
+                    if before == after:
+                        continue
+                    direction = 'added' if after else 'removed'
+                    result['counts'][direction] += 1
+                    if change == 'all' or direction == change:
+                        rows.append((row, direction, edit))
+                total = len(rows)
+                result['pagination'].update(total=total,
+                    next_offset=offset + limit if offset + limit < total else None)
+                result['records'] = [
+                    {'position': row['position'], 'name': row['name'],
+                     'artists': row['artists'], 'record_key': row['record_key'],
+                     'change': direction, **copy.deepcopy(edit)}
+                    for row, direction, edit in rows[offset:offset + limit]]
+        if generation != _cache_generation(cache_project):
+            raise DraftConflict('classification source changed')
+        if not cached and projection is not None:
+            _remember_projection(cache_project, generation, projection)
+        return result
+    except DraftConflict:
+        if cache_project is not None:
+            _forget_projection(cache_project)
+        raise
     except (OSError, ValueError, TypeError, KeyError, UnicodeError, RecursionError, ClassificationError):
         if cache_project is not None:
             _forget_projection(cache_project)

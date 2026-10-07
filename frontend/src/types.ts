@@ -133,13 +133,14 @@ export interface Job {
 }
 
 export type ClassificationDimension = 'all' | 'scene' | 'style' | 'language';
-export type ClassificationReview = 'all' | 'pending' | 'needs_review' | 'conflict' | 'low_confidence' | 'weak_evidence' | 'pilot' | 'draft';
+export type ClassificationReview = 'all' | 'pending' | 'needs_review' | 'conflict' | 'low_confidence' | 'weak_evidence' | 'pilot' | 'draft' | 'version';
 export interface ClassificationQuery {
   offset: number;
   query: string;
   dimension: ClassificationDimension;
   tag: string;
   review: ClassificationReview;
+  basis?: 'original' | 'draft';
 }
 export interface ClassificationCorrection {
   styles: string[];
@@ -168,6 +169,7 @@ export interface ClassificationQuality {
   pilot_positions: number[];
   playlist_changes: { name: string; added_count: number; removed_count: number }[];
   rules: { scene: string; include: string[]; exclude: string[] }[];
+  draft_summary?: { pending_count: number; unknown_style_count: number; unknown_language_count: number };
 }
 export interface ClassificationRecord {
   position: number;
@@ -185,6 +187,37 @@ export interface ClassificationRecord {
   needs_review?: boolean;
   review_reasons?: string[];
   draft?: ClassificationCorrection | null;
+  recording_hints?: string[];
+}
+export interface ClassificationChangesQuery {
+  playlist: string;
+  source_version: string;
+  revision: number;
+  offset: number;
+  change: 'all' | 'added' | 'removed';
+}
+export interface ClassificationChangeRecord {
+  position: number;
+  name: string;
+  artists: string;
+  record_key: string;
+  change: 'added' | 'removed';
+  before: Pick<ClassificationCorrection, 'styles' | 'scenes' | 'language'>;
+  after: Pick<ClassificationCorrection, 'styles' | 'scenes' | 'language'>;
+  reason: string;
+  recording_note: string;
+}
+export interface ClassificationChangesPage {
+  status: 'available' | 'not_loaded' | 'unavailable';
+  source: 'local_correction_draft';
+  source_version: string | null;
+  revision: number;
+  draft_status: 'ready' | 'stale' | 'unavailable';
+  playlist: string;
+  filters: { change: ClassificationChangesQuery['change'] };
+  counts: { added: number; removed: number };
+  pagination: { offset: number; limit: number; total: number; next_offset: number | null };
+  records: ClassificationChangeRecord[];
 }
 export interface ClassificationPage {
   status: 'available' | 'not_loaded' | 'unavailable';

@@ -35,10 +35,11 @@ ASSERTIONS = (
     "reload_keeps_reason_and_recording_note", "narrow_editor_no_horizontal_overflow",
     "wide_no_horizontal_overflow", "correction_reverted", "no_account_job",
     "zero_account_action_posts", "exactly_two_draft_posts", "zero_external_requests",
-    "served_assets_match", "no_browser_storage_state",
+    "served_assets_match", "no_browser_storage_state", "version_hint_filter",
+    "draft_basis_tag_filter", "per_song_added_preview", "per_song_removed_preview",
 )
 STAGES = frozenset(("startup", "review", "conflict", "low_score", "editing", "save",
-                    "preview", "reload", "narrow", "wide", "revert", "proof"))
+                    "preview", "version", "basis", "changes", "reload", "narrow", "wide", "revert", "proof"))
 
 
 def source_hashes(project):
@@ -108,6 +109,10 @@ def browser_script(url, run_id, assets_hash, manifest, wide, narrow):
     await review().selectOption('low_confidence'); await waitPositions([2]);
     require((await records().getByRole('article').locator('.classification-score').innerText()).includes('0.65'));
     assertions.low_confidence_filter = true;
+    stage = 'version';
+    await review().selectOption('version'); await waitPositions([2]);
+    require((await records().innerText()).includes('加速版本'));
+    assertions.version_hint_filter = true;
     await review().selectOption('all'); await waitPositions([1, 2, 3, 4]);
     stage = 'editing';
     await first().getByRole('button', {name: '修正分类', exact: true}).click();
@@ -136,6 +141,27 @@ def browser_script(url, run_id, assets_hash, manifest, wide, narrow):
     await quality.getByText('移出 1 首', {exact: true}).waitFor();
     await quality.getByText('加入 1 首', {exact: true}).waitFor();
     assertions.playlist_changes_preview = true;
+    stage = 'changes';
+    await quality.getByRole('button', {name: '逐曲核对场景 · 放松睡前', exact: true}).click();
+    let changes = page.getByRole('region', {name: '歌单变动：场景 · 放松睡前', exact: true});
+    await changes.getByText(reason, {exact: true}).waitFor();
+    require((await changes.innerText()).includes('Rain · 雨の音') && (await changes.innerText()).includes(version));
+    await changes.getByRole('combobox', {name: '变动方向', exact: true}).selectOption('added');
+    await changes.getByText(reason, {exact: true}).waitFor();
+    assertions.per_song_added_preview = true;
+    await quality.getByRole('button', {name: '逐曲核对场景 · 通勤散步', exact: true}).click();
+    changes = page.getByRole('region', {name: '歌单变动：场景 · 通勤散步', exact: true});
+    await changes.getByRole('combobox', {name: '变动方向', exact: true}).selectOption('removed');
+    await changes.getByText(reason, {exact: true}).waitFor();
+    require((await changes.innerText()).includes('Rain · 雨の音'));
+    assertions.per_song_removed_preview = true;
+    stage = 'basis';
+    await records().getByRole('combobox', {name: '分类依据', exact: true}).selectOption('draft');
+    await waitPositions([1, 2, 3, 4]);
+    await first().getByRole('button', {name: '场景 · 放松睡前', exact: true}).click();
+    await waitPositions([1]);
+    require((await read('/api/classification?basis=draft&dimension=scene&tag=' + encodeURIComponent('放松睡前'))).pagination.total === 1);
+    assertions.draft_basis_tag_filter = true;
     stage = 'wide';
     await noOverflow(); assertions.wide_no_horizontal_overflow = true;
     await page.screenshot({path: wide, fullPage: true});
@@ -221,6 +247,7 @@ def run_browser(node, entry, snapshot, index_hash, assets_hash, run_id, deadline
         fixture.setUp()
         fixture.report["records"][0]["review_note"] = True
         fixture.report["records"][1]["style_judgment_score"] = .65
+        fixture.report["records"][1]["name"] = '喜欢 (Speed Up Version)'
         fixture.write("全库分类-逐曲结果.json", fixture.report, 101)
         before = source_hashes(fixture.project)
         controller = FakeController(fixture.project)
@@ -298,14 +325,18 @@ def main():
     parser.add_argument("--browser", choices=("msedge", "chrome"), default="msedge")
     parser.add_argument("--cli-path")
     parser.add_argument("--timeout", type=int, default=120)
+    parser.add_argument("--output-dir", type=Path, default=OUTPUT,
+                        help="本轮模拟验收报告与截图目录，可指定新目录保留既有证据。")
     options = parser.parse_args()
+    output = options.output_dir.resolve()
+    report_path = output / REPORT.name
     started, run_id = time.monotonic(), secrets.token_hex(16)
     report = {"kind": "classification_quality_fake_browser_verification", "version": 1,
               "run_id": run_id, "started_at_ns": time.time_ns(), "status": "FAIL", "verified": False,
               "real_account_calls": 0}
     stage = "configuration"
     try:
-        write_report(REPORT, {**report, "failed_stage": "in_progress"})
+        write_report(report_path, {**report, "failed_stage": "in_progress"})
         if not 60 <= options.timeout <= 300:
             raise VerificationError(stage)
         node = shutil.which("node")
@@ -321,7 +352,7 @@ def main():
         require_frontend_fresh(ASSETS, index_hash, assets_hash)
         stage = "screenshots"
         for label in ("wide", "narrow"):
-            path = OUTPUT / f"classification-quality-{label}.png"
+            path = output / f"classification-quality-{label}.png"
             path.write_bytes(screens[label])
             report.setdefault("screenshots", {})[label] = {"path": str(path), "sha256": hashlib.sha256(screens[label]).hexdigest()}
         report.update(status="PASS", verified=True, elapsed_seconds=round(time.monotonic() - started, 2))
@@ -329,7 +360,7 @@ def main():
         report.update(status="FAIL", verified=False, failed_stage=error.stage if isinstance(error, VerificationError) else stage)
     report["finished_at_ns"] = time.time_ns()
     try:
-        write_report(REPORT, report)
+        write_report(report_path, report)
     except (Exception, KeyboardInterrupt):
         print("FAIL report_save")
         return 1

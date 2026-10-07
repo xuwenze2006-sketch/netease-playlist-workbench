@@ -15,7 +15,17 @@ GENERIC_EVIDENCE_NOTES = frozenset({
 })
 LOW_SCORE_REASON = "风格判断把握较低"
 WEAK_EVIDENCE_REASON = "风格或场景依据过于宽泛"
+INCOMPLETE_EVIDENCE_REASON = "分类依据明确标注待核对"
 CONFLICT_REASON = "录音或语言证据存在冲突"
+
+# These additions only discuss language, leaving the generic style/scene basis
+# unchanged. Do not treat an arbitrary suffix as generic: it may add real
+# recording evidence, which cannot be assessed from a keyword alone.
+_LANGUAGE_ONLY_ADDENDA = (
+    "语言按具体演唱版本判定，不按歌曲标题或艺人国籍",
+    "吟唱使用构造语言，不能视为纯音乐",
+)
+_INCOMPLETE_NOTE = re.compile(r"待核(?:对)?[。.!！?？\s]*\Z")
 
 # These are listening criteria to calibrate with the user, not audio classifiers.
 SCENE_RULES = [
@@ -99,6 +109,12 @@ _VERSION_PATTERNS = (
     ("翻唱", re.compile(r"(?<![a-z])cover(?![a-z])|翻唱", re.I)),
     ("伴奏或器乐版本", re.compile(r"(?<![a-z])instrumental(?![a-z])|伴奏", re.I)),
     ("不插电或原声版本", re.compile(r"(?<![a-z])(?:acoustic|unplugged)(?![a-z])|不插电", re.I)),
+    ("EXPO 版本", re.compile(r"(?<![a-z])expo[\s_-]*ver(?:sion)?\.?(?![a-z])", re.I)),
+    ("加速版本", re.compile(r"(?<![a-z])(?:speed|sped)[\s_-]*up(?![a-z])|加速", re.I)),
+    ("减速版本", re.compile(r"(?<![a-z])(?:slowed|slow[\s_-]*down)(?![a-z])|减速|降速|慢速版", re.I)),
+    ("剪辑或扩展版本", re.compile(r"(?<![a-z])(?:edit|extended)(?![a-z])|剪辑版|加长版", re.I)),
+    ("短片段或电视截取版", re.compile(r"(?<![a-z])tv[\s_-]*(?:size|ver(?:sion)?\.?|版)(?![a-z])|片段|截取版|短版", re.I)),
+    ("Demo 或试作版本", re.compile(r"(?<![a-z])demo(?![a-z])|试作版", re.I)),
 )
 _STRATA = ("conflict", "low_score_assigned", "unknown", "weak_evidence", "ordinary", "other")
 
@@ -126,8 +142,14 @@ def review_reasons(record):
     if score is not None and score < 0.7:
         reasons.append(LOW_SCORE_REASON)
     note = record.get("evidence_note")
-    if type(note) is str and note in GENERIC_EVIDENCE_NOTES:
-        reasons.append(WEAK_EVIDENCE_REASON)
+    if type(note) is str:
+        normalized = note.strip().rstrip("。.!！;；")
+        if (normalized in GENERIC_EVIDENCE_NOTES or any(
+                normalized == template + "；" + suffix
+                for template in GENERIC_EVIDENCE_NOTES for suffix in _LANGUAGE_ONLY_ADDENDA)):
+            reasons.append(WEAK_EVIDENCE_REASON)
+        if _INCOMPLETE_NOTE.search(note):
+            reasons.append(INCOMPLETE_EVIDENCE_REASON)
     return list(dict.fromkeys(reasons))
 
 
@@ -150,7 +172,7 @@ def diagnostic_strata(record):
         strata.append("low_score_assigned")
     if _pending(record):
         strata.append("unknown")
-    if WEAK_EVIDENCE_REASON in reasons:
+    if WEAK_EVIDENCE_REASON in reasons or INCOMPLETE_EVIDENCE_REASON in reasons:
         strata.append("weak_evidence")
     if not reasons and score is not None and score >= 0.8:
         strata.append("ordinary")

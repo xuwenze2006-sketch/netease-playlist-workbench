@@ -26,7 +26,7 @@ from .official_cli import CliError
 from .service import OrganizerError
 from .web_tracks import build_local_tracks
 from .web_classification import (
-    build_local_classification, save_local_classification_draft,
+    build_local_classification, build_local_classification_changes, save_local_classification_draft,
     _parameters as _classification_parameters,
 )
 from .classification_drafts import DraftConflict, DraftError
@@ -409,9 +409,10 @@ class WorkbenchApplication:
                 extra.append(None)
         return _signatures(self.project), directory_signatures(self.project), tuple(extra)
 
-    def refresh_local_records(self, *, offset=0, limit=50, query='', dimension='all', tag='', review='all', session=None):
+    def refresh_local_records(self, *, offset=0, limit=50, query='', dimension='all', tag='',
+                              review='all', basis='original', session=None):
         """Publish one idle local generation; a display refresh cannot resolve a write outcome."""
-        _classification_parameters(offset, limit, query, dimension, tag, review)
+        _classification_parameters(offset, limit, query, dimension, tag, review, basis)
         with self._records_gate:
             with self.lock:
                 if session is not None and not self.valid_session(session):
@@ -423,7 +424,7 @@ class WorkbenchApplication:
                 signatures = self._local_record_signatures()
                 candidate = self._strict_local_data()
                 classification = build_local_classification(self.project, offset=offset, limit=limit, query=query,
-                                                             dimension=dimension, tag=tag, review=review)
+                                                             dimension=dimension, tag=tag, review=review, basis=basis)
                 if (not isinstance(classification, dict) or classification.get('status') not in ('available', 'not_loaded')
                         or signatures != self._local_record_signatures()):
                     raise ValueError('local records changed or unavailable')
@@ -870,10 +871,10 @@ class _WorkbenchHandler(BaseHTTPRequestHandler):
                 if len(url.query) > 4096:
                     raise ValueError()
                 pairs = parse_qsl(url.query, keep_blank_values=True, strict_parsing=True,
-                                  encoding='utf-8', errors='strict', max_num_fields=7)
+                                  encoding='utf-8', errors='strict', max_num_fields=8)
                 parameters = dict(pairs)
                 if (len(parameters) != len(pairs)
-                        or set(parameters) - {'offset', 'limit', 'q', 'dimension', 'tag', 'review', 'refresh'}
+                        or set(parameters) - {'offset', 'limit', 'q', 'dimension', 'tag', 'review', 'refresh', 'basis'}
                         or 'refresh' in parameters and parameters['refresh'] != 'local'):
                     raise ValueError()
                 offset, limit = parameters.get('offset', '0'), parameters.get('limit', '50')
@@ -882,7 +883,7 @@ class _WorkbenchHandler(BaseHTTPRequestHandler):
                     raise ValueError()
                 arguments = {'offset': int(offset), 'limit': int(limit), 'query': parameters.get('q', ''),
                              'dimension': parameters.get('dimension', 'all'), 'tag': parameters.get('tag', ''),
-                             'review': parameters.get('review', 'all')}
+                             'review': parameters.get('review', 'all'), 'basis': parameters.get('basis', 'original')}
                 _classification_parameters(**arguments)
                 if parameters.get('refresh') == 'local':
                     status, data = self.server.application.refresh_local_records(**arguments, session=self._request_session)
@@ -896,6 +897,39 @@ class _WorkbenchHandler(BaseHTTPRequestHandler):
                 return
             except Exception:
                 self._json(503, {'accepted': False, 'message': '本地分类资料暂时无法读取，请稍后重试。'})
+                return
+            self.server.application.touch()
+            self._json(200, data)
+            return
+        if path == '/api/classification/changes':
+            try:
+                if len(url.query) > 4096:
+                    raise ValueError()
+                pairs = parse_qsl(url.query, keep_blank_values=True, strict_parsing=True,
+                                  encoding='utf-8', errors='strict', max_num_fields=6)
+                parameters = dict(pairs)
+                if (len(parameters) != len(pairs)
+                        or set(parameters) - {'playlist', 'source_version', 'revision', 'offset', 'limit', 'change'}
+                        or not {'playlist', 'source_version', 'revision'} <= parameters.keys()):
+                    raise ValueError()
+                offset, limit = parameters.get('offset', '0'), parameters.get('limit', '50')
+                revision = parameters['revision']
+                if (re.fullmatch(r'0|[1-9][0-9]{0,4}', offset) is None
+                        or re.fullmatch(r'[1-9][0-9]{0,2}', limit) is None
+                        or re.fullmatch(r'0|[1-9][0-9]{0,15}', revision) is None):
+                    raise ValueError()
+                data = build_local_classification_changes(
+                    self.server.application.project, playlist=parameters['playlist'],
+                    source_version=parameters['source_version'], revision=int(revision),
+                    offset=int(offset), limit=int(limit), change=parameters.get('change', 'all'))
+            except DraftConflict:
+                self._json(409, {'accepted': False, 'message': '来源或草稿修订已变化，请重新读取并核对变更。'})
+                return
+            except (ValueError, UnicodeError):
+                self._json(400, {'accepted': False, 'message': '分类变更查询参数无效。'})
+                return
+            except Exception:
+                self._json(503, {'accepted': False, 'message': '本地分类变更暂时无法读取，请稍后重试。'})
                 return
             self.server.application.touch()
             self._json(200, data)
