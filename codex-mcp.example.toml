@@ -1,0 +1,7 @@
+# 本地只读 MCP 配置样例。先把路径替换为自己的 Python 与项目绝对路径。
+# 仅示例，不会自动修改任何客户端配置。
+[mcp_servers.netease_desktop]
+command = 'python'
+args = ['-X', 'utf8', 'C:\path\to\netease-playlist-workbench\run_bridge.py', 'mcp']
+startup_timeout_sec = 15
+tool_timeout_sec = 30
