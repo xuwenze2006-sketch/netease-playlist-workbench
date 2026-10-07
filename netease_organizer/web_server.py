@@ -25,7 +25,11 @@ from .authorization import safe_authorization_url
 from .official_cli import CliError
 from .service import OrganizerError
 from .web_tracks import build_local_tracks
-from .web_classification import build_local_classification, _parameters as _classification_parameters
+from .web_classification import (
+    build_local_classification, save_local_classification_draft,
+    _parameters as _classification_parameters,
+)
+from .classification_drafts import DraftConflict, DraftError
 
 
 _MAX_BODY = 65536
@@ -432,6 +436,25 @@ class WorkbenchApplication:
                     return 200, classification
             except Exception:
                 return 503, {'accepted': False, 'message': '本地记录暂时无法完整刷新，原页面资料已保留，请稍后重试。'}
+
+    def save_classification_draft(self, raw, *, session=None):
+        """A guarded local edit; it never enters the account task dispatcher."""
+        with self._records_gate:
+            with self.lock:
+                if session is not None and not self.valid_session(session):
+                    return 403, {'accepted': False, 'message': '页面会话已更新，请重新读取分类记录。'}
+                if self.busy or self.stopping or self.stop_requested or self.page_closing:
+                    return 409, {'accepted': False, 'message': '已有任务正在运行或工作台正在关闭，请稍后保存草稿。'}
+            try:
+                return 200, save_local_classification_draft(self.project, raw)
+            except DraftConflict:
+                return 409, {'accepted': False, 'message': '来源或草稿修订已变化，请重新读取并核对后再保存。'}
+            except DraftError as error:
+                if getattr(error, 'code', 'invalid_request') == 'unavailable':
+                    return 503, {'accepted': False, 'message': '本地草稿暂时无法安全读写，请检查文件后重新读取。'}
+                return 400, {'accepted': False, 'message': '修正草稿参数无效，请检查标签和修正理由。'}
+            except Exception:
+                return 503, {'accepted': False, 'message': '本地草稿暂时无法保存，请重新读取后核对。'}
 
     def _update_connection(self, result):
         for field in self.connection:
@@ -947,7 +970,7 @@ class _WorkbenchHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._guard():
             return
-        if self.path not in ("/api/actions", "/api/pause", "/api/close", "/api/update"):
+        if self.path not in ("/api/actions", "/api/pause", "/api/close", "/api/update", "/api/classification/draft"):
             self._json(404, {"accepted": False, "message": "没有此本地 API。"})
             return
         lengths = self.headers.get_all("Content-Length", [])
@@ -967,6 +990,11 @@ class _WorkbenchHandler(BaseHTTPRequestHandler):
             if len(body) != length:
                 raise ValueError
             raw = json.loads(body.decode("utf-8"), object_pairs_hook=_unique_object, parse_constant=_reject_constant)
+            if self.path == '/api/classification/draft':
+                self.server.application.touch()
+                status, result = self.server.application.save_classification_draft(raw, session=self._request_session)
+                self._json(status, result)
+                return
             if self.path == "/api/update":
                 if (not isinstance(raw, dict) or set(raw) != {"instance", "revision"}
                         or type(raw["instance"]) is not str or re.fullmatch(r"[a-fA-F0-9]{32}", raw["instance"]) is None

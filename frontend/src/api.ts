@@ -6,9 +6,12 @@ import type {
   MetadataFilter,
   ClassificationPage,
   ClassificationQuery,
+  ClassificationDraftRequest,
+  ClassificationDraftResponse,
 } from './types';
 import { normalizeLocalTracks, normalizeState } from './normalize';
 import { normalizeClassification, validClassificationQuery } from './classificationData';
+import { validDraftRequest } from './classificationQuality';
 
 export class LocalApiError extends Error {
   readonly acceptanceUnknown: boolean;
@@ -142,6 +145,24 @@ export async function fetchClassification(
   } catch {
     throw new LocalApiError('本地分类资料格式不完整，请重试或检查本地记录。');
   }
+}
+
+export async function postClassificationDraft(
+  session: string,
+  payload: ClassificationDraftRequest,
+): Promise<ClassificationDraftResponse> {
+  if (!validDraftRequest(payload)) throw new LocalApiError('本地分类修正格式无效，请检查标签与修正理由。');
+  const value = await requestJson<unknown>(session, '/api/classification/draft', payload);
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const row = value as Record<string, unknown>;
+    if (row.accepted === true && typeof row.message === 'string' && row.message.trim() &&
+      Array.from(row.message).length <= 400 && !/[\u0000-\u001f\u007f-\u009f\ud800-\udfff]/u.test(row.message) &&
+      typeof row.revision === 'number' && Number.isSafeInteger(row.revision) && row.revision >= 0 &&
+      typeof row.changed_count === 'number' && Number.isSafeInteger(row.changed_count) && row.changed_count >= 0 && row.changed_count <= 10000) {
+      return { accepted: true, message: row.message, revision: row.revision, changed_count: row.changed_count };
+    }
+  }
+  throw new LocalApiError('本地修正的保存状态无法确认，请刷新分类记录后核对。请勿再次提交。', true);
 }
 
 export async function fetchLocalTracks(

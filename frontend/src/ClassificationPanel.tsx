@@ -1,8 +1,10 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
-import { fetchClassification, readSession } from './api';
+import { fetchClassification, postClassificationDraft, readSession } from './api';
+import { ClassificationEditor, ClassificationQualitySummary } from './ClassificationEditor';
+import { REVIEW_LABELS } from './classificationQuality';
 import { Icon } from './icons';
-import type { ClassificationDimension, ClassificationPage } from './types';
+import type { ClassificationDimension, ClassificationDraftRequest, ClassificationPage } from './types';
 import './classification.css';
 
 type Selection = ClassificationPage['filters'] & { offset: number };
@@ -29,6 +31,8 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
   const [failed, setFailed] = useState(false);
   const [retry, setRetry] = useState(0);
   const [pageNotice, setPageNotice] = useState('');
+  const [draftSubmitting, setDraftSubmitting] = useState(false);
+  const mutationLock = useRef(false);
   const generation = useRef(0);
   const refreshRequested = useRef(false);
   const resultsHeading = useRef<HTMLHeadingElement>(null);
@@ -187,6 +191,24 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
     refreshRequested.current = true;
     setRetry((value) => value + 1);
   }
+  async function submitDraft(request: ClassificationDraftRequest) {
+    if (mutationLock.current || !active || waiting || failed || currentData?.quality?.draft_status !== 'ready')
+      throw new Error('分类记录正在更新，请重新读取后保存修正。');
+    mutationLock.current = true;
+    setDraftSubmitting(true);
+    try {
+      const result = await postClassificationDraft(readSession(), request);
+      // A GET started while this POST was pending may contain an older draft.
+      // Invalidate it before requesting the accepted revision from local records.
+      generation.current += 1;
+      setLoading(true);
+      setPageNotice(result.message);
+      refresh();
+    } finally {
+      mutationLock.current = false;
+      setDraftSubmitting(false);
+    }
+  }
   function changePage(offset: number, source: HTMLButtonElement) {
     const next = { ...selection, offset };
     pageIntent.current = {
@@ -222,7 +244,7 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
     selection.dimension === 'all'
       ? '全部维度'
       : `${DIMENSIONS[selection.dimension]}${selection.tag ? ` · ${selection.tag}` : ' · 全部标签'}`,
-    ...(selection.review === 'pending' ? ['待辨识'] : []),
+    ...(selection.review !== 'all' ? [REVIEW_LABELS[selection.review]] : []),
     ...(input.trim() ? [`搜索“${input.trim()}”`] : []),
   ];
   const retryButton = (
@@ -312,6 +334,9 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
             </div>
           ))}
         </section>
+      )}
+      {data?.status === 'available' && data.quality && (
+        <ClassificationQualitySummary quality={data.quality} onReview={(review) => { filter({ review }); setView('songs'); }} />
       )}
       {failed && data?.status === 'available' && (
         <div className="classification-stale" role="alert">
@@ -415,6 +440,12 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
             >
               只看待辨识
             </button>
+            {data?.quality && <label>
+              复核筛选
+              <select aria-label="复核筛选" value={selection.review} onChange={(event) => filter({ review: event.target.value as Selection['review'] })}>
+                {Object.entries(REVIEW_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+              </select>
+            </label>}
           </div>
           {waiting && !available ? (
             <p className="classification-empty" role="status">
@@ -452,7 +483,9 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
                 {currentData.records.length ? (
                   <div className="classification-track-list">
                     {currentData.records.map((track) => (
-                      <article className="classification-track" key={track.position}>
+                      <article className="classification-track" key={currentData.quality
+                        ? `${currentData.quality.source_version}:${currentData.quality.revision}:${track.record_key}`
+                        : track.position}>
                         <span className="classification-position">{track.position}</span>
                         <div className="classification-track-content">
                           <h3>{track.name}</h3>
@@ -467,6 +500,13 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
                               <span className="pending-tag">待辨识</span>
                             )}
                           </div>
+                          {track.needs_review && <div className="classification-review-reasons">
+                            <strong>需复核</strong>
+                            <ul>{track.review_reasons?.map((reason) => <li key={reason}>{reason}</li>)}</ul>
+                          </div>}
+                          {track.style_judgment_score !== undefined && <p className="classification-score">
+                            模型自评分：{track.style_judgment_score === null ? '未记录' : track.style_judgment_score.toFixed(2)}（未经校准）
+                          </p>}
                           <details className="classification-evidence">
                             <summary>查看分类依据</summary>
                             <p>{track.evidence_note || '未记录风格或场景判断依据。'}</p>
@@ -479,6 +519,9 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
                               </ul>
                             )}
                           </details>
+                          {currentData.quality && track.record_key && <ClassificationEditor
+                            track={track} quality={currentData.quality} disabled={waiting || failed || draftSubmitting || !active}
+                            onSubmit={submitDraft} />}
                         </div>
                       </article>
                     ))}

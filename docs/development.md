@@ -67,6 +67,7 @@ npm install --prefix .tools/browser-verification @playwright/cli@0.1.22 --ignore
 $playwrightCli = Join-Path $PWD '.tools/browser-verification/node_modules/@playwright/cli'
 python -X utf8 .\scripts\verify_web.py --cli-path $playwrightCli --browser msedge
 python -X utf8 .\scripts\verify_classification_workbench.py --cli-path $playwrightCli --browser msedge
+python -X utf8 .\scripts\verify_classification_quality_browser.py --cli-path $playwrightCli --browser msedge
 ```
 
 安装命令需要联网；验收脚本自身不会自动安装软件或浏览器。始终显式传入 `--cli-path`，不要依赖某台开发机的 npm 临时缓存位置。使用 Chrome 时将 `--browser` 改为 `chrome`。
@@ -75,6 +76,7 @@ python -X utf8 .\scripts\verify_classification_workbench.py --cli-path $playwrig
 | --- | --- |
 | `verify_web.py` | 创建过程中的暂停、手动续做、完成后防重放及关窗暂停。 |
 | `verify_classification_workbench.py` | 分类查询、标签与歌单筛选、分页、导航恢复和显式刷新。 |
+| `verify_classification_quality_browser.py` | 复核筛选、本地修正与版本理由、差异预览、重载保留、撤销和窄屏编辑。 |
 | `verify_recovery.py` | 缺少接入环境、账号冲突及未知写入结果的界面保护。 |
 | `verify_restart.py` | 重启后的未决操作保护及主动只读核对。 |
 | `verify_authorization.py` | 未决名称操作下重新授权与只读核对。 |

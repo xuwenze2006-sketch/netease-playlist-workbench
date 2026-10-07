@@ -104,12 +104,12 @@ class ClassificationCacheTests(unittest.TestCase):
         match = display._matches
         changed = False
 
-        def change(row, filters):
+        def change(row, filters, pilot_positions=()):
             nonlocal changed
             if not changed:
                 changed = True
                 self.fixture.write(REPORT, {}, 110)
-            return match(row, filters)
+            return match(row, filters, pilot_positions)
 
         with patch.object(display, '_matches', side_effect=change):
             result = self.fixture.view(query='Rain')

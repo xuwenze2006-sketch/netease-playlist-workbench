@@ -130,7 +130,9 @@ class WebClassificationTests(unittest.TestCase):
         self.assertEqual(result['records'][2]['artists'], '')
         self.assertEqual(result['records'][2]['pending_reasons'], ['风格待辨识'])
         self.assertEqual(set(result['records'][0]), {'position', 'name', 'artists', 'styles', 'scenes', 'language',
-                                                  'pending_reasons', 'evidence_note', 'language_evidence_note'})
+                                                    'pending_reasons', 'evidence_note', 'language_evidence_note',
+                                                    'record_key', 'style_judgment_score', 'review_note',
+                                                    'needs_review', 'review_reasons', 'draft'})
         self.assertEqual(result['options']['style'], ['流行抒情', '摇滚与独立', '待辨识'])
         self.assertTrue(all(row['key'] is None for row in result['playlists']))
         self.assertEqual(result['playlists'][-1]['dimension'], 'review')

@@ -1,4 +1,5 @@
-import type { ClassificationPage, ClassificationQuery } from './types';
+import type { ClassificationCorrection, ClassificationPage, ClassificationQuery, ClassificationQuality } from './types';
+import { REVIEW_LABELS, SCENE_LABELS, validCorrection } from './classificationQuality';
 
 type Row = Record<string, unknown>;
 const fail = (): never => { throw new Error('invalid classification data'); };
@@ -33,7 +34,7 @@ export function validClassificationQuery(query: ClassificationQuery): boolean {
   try {
     integer(query.offset);
     text(query.query, 160, true); text(query.tag, 160, true);
-    return ['all', 'scene', 'style', 'language'].includes(query.dimension) && ['all', 'pending'].includes(query.review);
+    return ['all', 'scene', 'style', 'language'].includes(query.dimension) && Object.hasOwn(REVIEW_LABELS, query.review);
   } catch { return false; }
 }
 export function normalizeClassification(value: unknown, request: ClassificationQuery): ClassificationPage {
@@ -58,14 +59,49 @@ export function normalizeClassification(value: unknown, request: ClassificationQ
       count: integer(row.count), key: row.key as string | null };
   });
   if (new Set(playlists.map((p) => p.name)).size !== playlists.length) return fail();
+  let quality: ClassificationQuality | undefined;
+  if (root.quality !== undefined) {
+    const raw = object(root.quality);
+    const version = text(raw.source_version, 64);
+    if (!/^[a-f0-9]{64}$/.test(version) || !['ready', 'stale', 'unavailable'].includes(raw.draft_status as string)) return fail();
+    const pilot = array(raw.pilot_positions, 100).map((v) => integer(v));
+    if (pilot.some((v) => v === 0) || new Set(pilot).size !== pilot.length) return fail();
+    const changes = array(raw.playlist_changes, 64).map((v) => {
+      const row = object(v);
+      return { name: text(row.name, 100), added_count: integer(row.added_count), removed_count: integer(row.removed_count) };
+    });
+    const rules = array(raw.rules, 6).map((v) => {
+      const row = object(v); const scene = text(row.scene, 160);
+      if (!SCENE_LABELS.includes(scene)) return fail();
+      return { scene, include: texts(row.include, 16), exclude: texts(row.exclude, 16) };
+    });
+    if (new Set(changes.map((v) => v.name)).size !== changes.length || new Set(rules.map((v) => v.scene)).size !== rules.length) return fail();
+    quality = { source_version: version, draft_status: raw.draft_status as ClassificationQuality['draft_status'],
+      revision: integer(raw.revision, Number.MAX_SAFE_INTEGER), changed_count: integer(raw.changed_count), review_count: integer(raw.review_count),
+      pilot_positions: pilot, playlist_changes: changes, rules };
+  }
   const records = array(root.records, 50).map((value) => {
     const row = object(value);
     const position = integer(row.position);
     if (position === 0) return fail();
-    return { position, name: text(row.name), artists: text(row.artists, 2048, true),
+    const record = { position, name: text(row.name), artists: text(row.artists, 2048, true),
       styles: texts(row.styles), scenes: texts(row.scenes), language: text(row.language, 160),
       pending_reasons: texts(row.pending_reasons, 16), evidence_note: text(row.evidence_note, 2048, true),
       language_evidence_note: text(row.language_evidence_note, 2048, true) };
+    if (!quality) return record;
+    const recordKey = text(row.record_key, 32);
+    const score = row.style_judgment_score;
+    if (!/^[a-f0-9]{32}$/.test(recordKey) || !(score === null || typeof score === 'number' && Number.isFinite(score) && score >= 0 && score <= 1) ||
+      typeof row.review_note !== 'boolean' || typeof row.needs_review !== 'boolean') return fail();
+    let draft: ClassificationCorrection | null = null;
+    if (row.draft !== null) {
+      const raw = object(row.draft);
+      draft = { styles: texts(raw.styles, 2), scenes: texts(raw.scenes, 3), language: text(raw.language, 160),
+        reason: text(raw.reason, 1000), recording_note: text(raw.recording_note, 1000, true) };
+      if (!validCorrection(draft)) return fail();
+    }
+    return { ...record, record_key: recordKey, style_judgment_score: score as number | null,
+      review_note: row.review_note, needs_review: row.needs_review, review_reasons: texts(row.review_reasons, 16), draft };
   });
   if (new Set(records.map((r) => r.position)).size !== records.length ||
     records.length !== Math.min(limit, Math.max(0, total - offset))) return fail();
@@ -79,6 +115,8 @@ export function normalizeClassification(value: unknown, request: ClassificationQ
       summary.unknown_style_count > summary.pending_count || summary.unknown_language_count > summary.pending_count ||
       summary.playlist_count !== playlists.length || total > summary.source_count ||
       records.some((r) => r.position > summary!.source_count)) return fail();
+    if (quality && (quality.changed_count > summary.source_count || quality.review_count > summary.source_count ||
+      quality.pilot_positions.some((v) => v > summary!.source_count))) return fail();
   }
   const updated = timestamp(root.updated_at), verified = timestamp(root.verified_at);
   if (root.status === 'available') {
@@ -90,5 +128,6 @@ export function normalizeClassification(value: unknown, request: ClassificationQ
   return { status: root.status as ClassificationPage['status'], source: 'local_record',
     verification: root.verification as ClassificationPage['verification'], updated_at: updated, verified_at: verified,
     summary, options: safeOptions, playlists, filters: { query: request.query, dimension: request.dimension,
-      tag: request.tag, review: request.review }, pagination: { offset, limit, total, next_offset: expectedNext }, records };
+      tag: request.tag, review: request.review }, pagination: { offset, limit, total, next_offset: expectedNext }, records,
+    ...(quality ? { quality } : {}) };
 }

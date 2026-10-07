@@ -133,12 +133,41 @@ export interface Job {
 }
 
 export type ClassificationDimension = 'all' | 'scene' | 'style' | 'language';
+export type ClassificationReview = 'all' | 'pending' | 'needs_review' | 'conflict' | 'low_confidence' | 'weak_evidence' | 'pilot' | 'draft';
 export interface ClassificationQuery {
   offset: number;
   query: string;
   dimension: ClassificationDimension;
   tag: string;
-  review: 'all' | 'pending';
+  review: ClassificationReview;
+}
+export interface ClassificationCorrection {
+  styles: string[];
+  scenes: string[];
+  language: string;
+  reason: string;
+  recording_note: string;
+}
+export type ClassificationDraftRequest = {
+  source_version: string;
+  revision: number;
+  record_key: string;
+} & ({ action: 'save' } & ClassificationCorrection | { action: 'remove' });
+export interface ClassificationDraftResponse {
+  accepted: true;
+  message: string;
+  revision: number;
+  changed_count: number;
+}
+export interface ClassificationQuality {
+  source_version: string;
+  draft_status: 'ready' | 'stale' | 'unavailable';
+  revision: number;
+  changed_count: number;
+  review_count: number;
+  pilot_positions: number[];
+  playlist_changes: { name: string; added_count: number; removed_count: number }[];
+  rules: { scene: string; include: string[]; exclude: string[] }[];
 }
 export interface ClassificationRecord {
   position: number;
@@ -150,6 +179,12 @@ export interface ClassificationRecord {
   pending_reasons: string[];
   evidence_note: string;
   language_evidence_note: string;
+  record_key?: string;
+  style_judgment_score?: number | null;
+  review_note?: boolean;
+  needs_review?: boolean;
+  review_reasons?: string[];
+  draft?: ClassificationCorrection | null;
 }
 export interface ClassificationPage {
   status: 'available' | 'not_loaded' | 'unavailable';
@@ -170,6 +205,7 @@ export interface ClassificationPage {
   filters: Omit<ClassificationQuery, 'offset'>;
   pagination: { offset: number; limit: number; total: number; next_offset: number | null };
   records: ClassificationRecord[];
+  quality?: ClassificationQuality;
 }
 export interface PlaylistReadIntent {
   key: string;

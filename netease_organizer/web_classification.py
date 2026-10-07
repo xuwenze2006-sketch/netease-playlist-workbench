@@ -3,11 +3,12 @@
 import copy
 import hashlib
 import json
+import math
 import re
 import stat
 import threading
 import unicodedata
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -16,6 +17,8 @@ from .classification_execution import (
     _encoded, _journal, _result, plan_digest, validate_plan,
 )
 from .classification_planning import LANGUAGES, SCENES, STYLES
+from .classification_drafts import DraftConflict, DraftError, load_draft, mutate_draft
+from .classification_quality import SCENE_RULES, review_reasons, select_pilot
 
 
 MAX_REPORT_BYTES = 16 * 1024 * 1024
@@ -178,7 +181,9 @@ def _parameters(offset, limit, query, dimension, tag, review):
     if (type(offset) is not int or not 0 <= offset <= 10000
             or type(limit) is not int or not 1 <= limit <= 100
             or type(dimension) is not str or dimension not in ('all', *_DIMENSIONS)
-            or type(review) is not str or review not in ('all', 'pending')):
+            or type(review) is not str or review not in (
+                'all', 'pending', 'needs_review', 'conflict', 'low_confidence',
+                'weak_evidence', 'pilot', 'draft')):
         raise ValueError('分类筛选参数不兼容。')
     try:
         _text(query, 160, empty=True)
@@ -239,11 +244,22 @@ def _report(raw, plan):
         reasons = (['风格待辨识'] if styles == ['待辨识'] else []) + (['语言待辨识'] if language == '待辨识' else [])
         if raw_record.get('pending_reasons') != reasons:
             raise _Invalid()
+        score = raw_record.get('style_judgment_score')
+        conflict = raw_record.get('review_note', False)
+        if (score is not None and (type(score) not in (int, float)
+                                  or not math.isfinite(score) or not 0 <= score <= 1)
+                or type(conflict) is not bool):
+            raise _Invalid()
         records.append({'position': position, 'name': _text(raw_record.get('name')),
                         'artists': _text(raw_record.get('artists'), 2048, empty=True),
                         'styles': styles, 'scenes': scenes, 'language': language,
                         'pending_reasons': reasons, 'evidence_note': _text(raw_record.get('evidence_note'), 2048),
-                        'language_evidence_note': _text(raw_record.get('language_evidence_note'), 2048)})
+                        'language_evidence_note': _text(raw_record.get('language_evidence_note'), 2048),
+                        'style_judgment_score': score, 'review_note': conflict,
+                        'record_key': hashlib.sha256(_encoded({
+                            'account': plan['account_id'], 'track': ident})).hexdigest()[:32]})
+        records[-1]['review_reasons'] = review_reasons(records[-1])
+        records[-1]['needs_review'] = bool(records[-1]['review_reasons'])
         for dimension, labels in (('scene', scenes), ('style', styles), ('language', [language])):
             for label in labels:
                 if label in ('待辨识', '器乐或配乐录音'):
@@ -373,8 +389,20 @@ def _fold(value):
     return unicodedata.normalize('NFKC', value).casefold()
 
 
-def _matches(row, filters):
+def _matches(row, filters, pilot_positions=()):
     if filters['review'] == 'pending' and not row['pending_reasons']:
+        return False
+    if filters['review'] == 'needs_review' and not row['needs_review']:
+        return False
+    if filters['review'] == 'conflict' and not row['review_note']:
+        return False
+    if filters['review'] == 'low_confidence' and '风格判断把握较低' not in row['review_reasons']:
+        return False
+    if filters['review'] == 'weak_evidence' and '风格或场景依据过于宽泛' not in row['review_reasons']:
+        return False
+    if filters['review'] == 'pilot' and row['position'] not in pilot_positions:
+        return False
+    if filters['review'] == 'draft' and row['draft'] is None:
         return False
     tag, dimension = filters['tag'], filters['dimension']
     if tag:
@@ -405,7 +433,68 @@ def _build_projection(project):
     return {'status': 'available', 'source': 'local_record',
             'verification': 'verified' if verified else 'local_only', 'updated_at': created.isoformat(),
             'verified_at': verified, 'summary': summary, 'options': options, 'playlists': playlists,
-            'records': records}
+            'records': records,
+            'quality': {'source_version': hashlib.sha256(_encoded({
+                'plan_digest': plan_digest(plan), 'report': report_record[0]})).hexdigest(),
+                'draft_status': 'ready', 'revision': 0, 'changed_count': 0,
+                'review_count': sum(row['needs_review'] for row in records),
+                'pilot_positions': select_pilot(records), 'playlist_changes': [],
+                'rules': copy.deepcopy(SCENE_RULES)}}
+
+
+def _memberships(labels):
+    names = {'场景 · ' + value for value in labels['scenes']}
+    names.update('风格 · ' + value for value in labels['styles'] if value != '待辨识')
+    if labels['language'] in LANGUAGES.values():
+        names.add('语言 · ' + labels['language'])
+    if labels['styles'] == ['待辨识'] or labels['language'] == '待辨识':
+        names.add('分类 · 待辨识')
+    return names
+
+
+def _with_draft(project, projection):
+    """Drafts are read on every query, separate from immutable source caching."""
+    result = copy.deepcopy(projection)
+    quality = result['quality']
+    draft = load_draft(project, quality['source_version'], result['records'])
+    quality.update(draft_status=draft['status'], revision=draft['revision'],
+                   changed_count=draft['changed_count'])
+    added, removed = Counter(), Counter()
+    for row in result['records']:
+        edit = draft['edits'].get(row['record_key'])
+        row['draft'] = None if edit is None else {
+            **copy.deepcopy(edit['after']), 'reason': edit['reason'],
+            'recording_note': edit['recording_note']}
+        if edit is not None:
+            before, after = _memberships(row), _memberships(edit['after'])
+            added.update(after - before)
+            removed.update(before - after)
+    quality['playlist_changes'] = [{'name': name, 'added_count': added[name],
+                                    'removed_count': removed[name]}
+                                   for name in sorted(set(added) | set(removed))]
+    return result
+
+
+def save_local_classification_draft(project, request):
+    """Save a local correction, without making or changing an executable plan."""
+    project = Path(project).resolve()
+    try:
+        generation = _cache_generation(project)
+        projection = _cached_projection(project, generation)
+        if projection is None:
+            projection = _build_projection(project)
+        if projection is None or generation != _cache_generation(project):
+            raise DraftConflict('classification source changed')
+        result = mutate_draft(project, projection['quality']['source_version'],
+                              projection['records'], request)
+        if generation != _cache_generation(project):
+            raise DraftConflict('classification source changed')
+        return {'accepted': True, 'message': '本地修正草稿已保存。',
+                'revision': result['revision'], 'changed_count': result['changed_count']}
+    except (DraftConflict, DraftError):
+        raise
+    except (OSError, ValueError, TypeError, KeyError, UnicodeError, RecursionError, ClassificationError):
+        raise DraftError('classification source unavailable') from None
 
 
 def build_local_classification(project, *, offset=0, limit=50, query='', dimension='all', tag='', review='all'):
@@ -423,9 +512,11 @@ def build_local_classification(project, *, offset=0, limit=50, query='', dimensi
         if projection is None:
             result = _empty('not_loaded', filters, offset, limit)
         else:
-            selected = [row for row in projection['records'] if _matches(row, filters)]
+            visible = _with_draft(cache_project, projection)
+            pilot_positions = set(visible['quality']['pilot_positions'])
+            selected = [row for row in visible['records'] if _matches(row, filters, pilot_positions)]
             total = len(selected)
-            result = copy.deepcopy({**projection, 'filters': filters,
+            result = copy.deepcopy({**visible, 'filters': filters,
                                     'pagination': {'offset': offset, 'limit': limit, 'total': total,
                                                    'next_offset': offset + limit if offset + limit < total else None},
                                     'records': selected[offset:offset + limit]})

@@ -7,6 +7,76 @@
   font-size: 11px;
   text-decoration: none;
 }
+.classification-quality {
+  margin-bottom: 22px;
+  padding: 18px 22px;
+  border: 1px solid #e4d5c4;
+  border-radius: 12px;
+  background: #fffaf3;
+  font-size: 12px;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
+.classification-quality-heading,
+.classification-correction-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px 20px;
+  flex-wrap: wrap;
+}
+.classification-quality-heading .classification-inline {
+  margin: 0;
+}
+.classification-quality p { margin: 8px 0; }
+.classification-change-preview summary,
+.classification-scene-rules summary { cursor: pointer; }
+.classification-change-preview li { display: flex; gap: 8px 16px; flex-wrap: wrap; }
+.classification-scene-rules article { margin-top: 12px; }
+.classification-scene-rules h3 { margin: 0; font-size: 12px; }
+.classification-scene-rules p { margin: 3px 0; }
+.classification-review-reasons {
+  margin-top: 12px;
+  padding: 9px 12px;
+  color: #80502d;
+  background: #fff5e7;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.classification-review-reasons ul { margin: 4px 0 0; padding-left: 18px; }
+.classification-score { color: #756879; font-size: 11px; }
+.classification-diff {
+  margin-top: 12px;
+  padding: 12px;
+  background: #f0f7f4;
+  border: 1px solid #d3e6dc;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.classification-diff dl { display: grid; grid-template-columns: 42px minmax(0, 1fr); gap: 4px 8px; margin: 8px 0; }
+.classification-diff dd { margin: 0; }
+.classification-diff p { margin: 5px 0 0; }
+.classification-editor {
+  min-width: 0;
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid #d8d0dc;
+  border-radius: 10px;
+  background: #faf8fb;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.classification-editor legend { font-weight: 550; }
+.classification-editor p { margin: 0 0 12px; color: #756879; }
+.classification-editor-labels { display: flex; gap: 8px 16px; flex-wrap: wrap; border: 0; padding: 8px 0 14px; margin: 0; min-width: 0; }
+.classification-editor-labels label { display: flex; align-items: center; gap: 5px; }
+.classification-editor-input { display: grid; gap: 5px; margin-bottom: 12px; }
+.classification-editor-input input,
+.classification-editor-input select { width: 100%; min-width: 0; box-sizing: border-box; padding: 9px; border: 1px solid #dbd5de; border-radius: 6px; background: white; font: inherit; }
+.classification-editor input:focus-visible,
+.classification-editor select:focus-visible { outline: 2px solid var(--red); outline-offset: 2px; }
+.classification-editor-error { color: #9c3838; font-size: 12px; line-height: 1.7; }
 .classification-panel[hidden],
 .classification-panel [role='tabpanel'][hidden] {
   display: none;
