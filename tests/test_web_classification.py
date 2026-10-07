@@ -24,7 +24,7 @@ class WebClassificationTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.project = Path(self.temp.name)
+        self.project = Path(self.temp.name).resolve()
         (self.project / 'artifacts').mkdir()
         self.ids = [f'{index:032X}' for index in range(1, 5)]
         memberships = [

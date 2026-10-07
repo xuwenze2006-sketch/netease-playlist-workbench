@@ -11,7 +11,7 @@ from netease_organizer.web_launcher import (InstanceBusy, browser_command, insta
 class WebLauncherTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.project = Path(self.temp.name)
+        self.project = Path(self.temp.name).resolve()
 
     def tearDown(self):
         self.temp.cleanup()

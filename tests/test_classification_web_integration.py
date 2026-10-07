@@ -45,7 +45,7 @@ class ClassificationIntegrationTests(unittest.TestCase):
 class ClassificationHttpTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.project = Path(self.temp.name)
+        self.project = Path(self.temp.name).resolve()
         self.assets = self.project / 'dist'
         self.assets.mkdir()
         (self.assets / 'index.html').write_text('__ORGANIZER_SESSION__', encoding='utf-8')

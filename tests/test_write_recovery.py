@@ -25,7 +25,7 @@ class RecoveryCli(FakeCli):
 class WriteRecoveryTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         self.cli = RecoveryCli()
 
     def tearDown(self):
@@ -194,8 +194,8 @@ class WriteRecoveryTests(unittest.TestCase):
                 organizer = self.organizer()
                 # Each subcase uses a fresh local batch, not manually cleared protection.
                 with tempfile.TemporaryDirectory() as case_dir:
-                    organizer.project = Path(case_dir)
-                    organizer.data_dir = Path(case_dir) / "cache"
+                    organizer.project = Path(case_dir).resolve()
+                    organizer.data_dir = organizer.project / "cache"
                     organizer.execute_renames()
                     self.cli.playlists[FIRST]["name"] = "Funk"
                     mutate()
@@ -382,8 +382,8 @@ class WriteRecoveryTests(unittest.TestCase):
                         b'PRIVATE-PATH', b'x' * (1024 * 1024 + 1)):
             with self.subTest(size=len(content)), tempfile.TemporaryDirectory() as case_dir:
                 organizer = self.organizer()
-                organizer.project = Path(case_dir)
-                organizer.data_dir = Path(case_dir) / "cache"
+                organizer.project = Path(case_dir).resolve()
+                organizer.data_dir = organizer.project / "cache"
                 path = organizer.project / "artifacts/名称整理执行进度.json"
                 path.parent.mkdir(parents=True)
                 path.write_bytes(content)

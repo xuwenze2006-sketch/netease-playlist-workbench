@@ -9,7 +9,7 @@ class WebBuildTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         self.assets = self.root / 'frontend/dist'
         self.assets.mkdir(parents=True)
         (self.assets / 'index.html').write_bytes(b'<main>modern</main>')
@@ -75,6 +75,7 @@ class WebBuildTests(unittest.TestCase):
         with patch('netease_organizer.web_build._signature', side_effect=change_during_read):
             with self.assertRaises(LaunchError) as error:
                 load_build(self.root)
+        self.assertGreaterEqual(reads, 2)
         self.assertEqual(error.exception.code, 'build_changed')
 
     def test_asset_snapshot_cannot_be_mutated_after_identity_was_calculated(self):

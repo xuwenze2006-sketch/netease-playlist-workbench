@@ -17,7 +17,7 @@ APPROVED = {'林俊杰 · 红心精选': 21, '蔡健雅 · 红心精选': 13,
 class ArtistServiceTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         self.cli = Mock()
         self.cli.configured.return_value = True
         self.reader = Mock()
@@ -302,8 +302,8 @@ class ArtistServiceTests(unittest.TestCase):
         from test_create import FakeCli
         for failure in ('manifest', 'existing_name'):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as case_dir:
-                self.controller.project = Path(case_dir)
-                self.controller.data_dir = Path(case_dir) / 'cache'
+                self.controller.project = Path(case_dir).resolve()
+                self.controller.data_dir = self.controller.project / 'cache'
                 cli = FakeCli()
                 cli.configured = lambda: True
                 self.controller.cli = cli

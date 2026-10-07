@@ -48,7 +48,7 @@ class VerificationTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
-        self.project = Path(self.directory.name)
+        self.project = Path(self.directory.name).resolve()
 
     def package(self, *, bin_value='playwright-cli.js', version='0.1.22'):
         root = self.project / 'local tools with spaces' / 'node_modules' / '@playwright' / 'cli'
