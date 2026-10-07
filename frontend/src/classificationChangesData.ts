@@ -6,9 +6,11 @@ function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return invalid();
   return value as Record<string, unknown>;
 }
-function text(value: unknown, maximum: number, empty = false): string {
+function text(value: unknown, maximum: number, empty = false, multiline = false): string {
+  const controls = multiline ? /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\ud800-\udfff]/u
+    : /[\u0000-\u001f\u007f-\u009f\ud800-\udfff]/u;
   if (typeof value !== 'string' || !empty && !value.trim() || Array.from(value).length > maximum ||
-    /[\u0000-\u001f\u007f-\u009f\ud800-\udfff]/u.test(value)) return invalid();
+    controls.test(value)) return invalid();
   return value;
 }
 function integer(value: unknown, maximum = 10000): number {
@@ -50,7 +52,7 @@ export function normalizeClassificationChanges(value: unknown, request: Classifi
       request.change !== 'all' && raw.change !== request.change) return invalid();
     return { position, record_key: key, name: text(raw.name, 512), artists: text(raw.artists, 2048, true),
       change: raw.change as ClassificationChangeRecord['change'], before: labels(raw.before), after: labels(raw.after),
-      reason: text(raw.reason, 1000), recording_note: text(raw.recording_note, 1000, true) };
+      reason: text(raw.reason, 1000, false, true), recording_note: text(raw.recording_note, 1000, true, true) };
   });
   if (new Set(rows.map((r) => r.position)).size !== rows.length || new Set(rows.map((r) => r.record_key)).size !== rows.length ||
     rows.length !== Math.min(limit, Math.max(0, total - offset))) return invalid();

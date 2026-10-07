@@ -24,6 +24,136 @@ beforeEach(() => {
   vi.mocked(fetchClassificationChanges).mockImplementation(async (_session, request) => page(request.offset, request.change));
 });
 describe('lazy classification playlist changes', () => {
+  it('focuses and scrolls the detail heading after keyboard expansion and successful keyboard paging', async () => {
+    let complete!: (value: ClassificationChangesPage) => void;
+    vi.mocked(fetchClassificationChanges).mockImplementationOnce(() => new Promise((resolve) => { complete = resolve; }));
+    render(<ClassificationChanges quality={quality} disabled={false} />);
+    const open = screen.getByRole('button', { name: '逐曲核对语言 · 英语' });
+    open.focus(); fireEvent.click(open, { detail: 0 });
+    const heading = screen.getByRole('heading', { name: '语言 · 英语 · 逐曲变动' });
+    const scroll = vi.fn(); heading.scrollIntoView = scroll;
+    await act(async () => { complete(page()); });
+    expect(document.activeElement).toBe(heading);
+    expect(scroll).toHaveBeenCalledWith({ block: 'start' });
+    const next = screen.getByRole('button', { name: '下一页变动' });
+    next.focus(); fireEvent.click(next, { detail: 0 });
+    await screen.findByText('待核对歌曲 51');
+    await waitFor(() => expect(document.activeElement).toBe(heading));
+    expect(scroll).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not move focus or scroll after the user leaves the initiating control while a read is pending', async () => {
+    let complete!: (value: ClassificationChangesPage) => void;
+    vi.mocked(fetchClassificationChanges).mockImplementationOnce(() => new Promise((resolve) => { complete = resolve; }));
+    render(<><button>其他操作</button><ClassificationChanges quality={quality} disabled={false} /></>);
+    const open = screen.getByRole('button', { name: '逐曲核对语言 · 英语' });
+    open.focus(); fireEvent.click(open, { detail: 0 });
+    const heading = screen.getByRole('heading', { name: '语言 · 英语 · 逐曲变动' });
+    const scroll = vi.fn(); heading.scrollIntoView = scroll;
+    const other = screen.getByRole('button', { name: '其他操作' }); other.focus();
+    await act(async () => { complete(page()); });
+    expect(document.activeElement).toBe(other); expect(scroll).not.toHaveBeenCalled();
+  });
+
+  it('does not restore paging focus after the user moves to another control while the next page loads', async () => {
+    render(<><button>其他操作</button><ClassificationChanges quality={quality} disabled={false} /></>);
+    const open = screen.getByRole('button', { name: '逐曲核对语言 · 英语' }); open.focus(); fireEvent.click(open, { detail: 0 });
+    await screen.findByText('待核对歌曲 1');
+    let complete!: (value: ClassificationChangesPage) => void;
+    vi.mocked(fetchClassificationChanges).mockImplementationOnce(() => new Promise((resolve) => { complete = resolve; }));
+    const heading = screen.getByRole('heading', { name: '语言 · 英语 · 逐曲变动' });
+    const focus = vi.spyOn(heading, 'focus'), scroll = vi.fn(); heading.scrollIntoView = scroll;
+    const next = screen.getByRole('button', { name: '下一页变动' }); next.focus(); fireEvent.click(next, { detail: 0 });
+    const other = screen.getByRole('button', { name: '其他操作' }); other.focus();
+    await act(async () => { complete(page(50)); });
+    expect(screen.getByText('待核对歌曲 51')).toBeTruthy();
+    expect(document.activeElement).toBe(other); expect(focus).not.toHaveBeenCalled(); expect(scroll).not.toHaveBeenCalled();
+  });
+
+  it.each(['PageDown', 'ArrowDown', ' '] as const)('does not restore paging focus after keyboard scroll %j while focus is on the body', async (key) => {
+    render(<ClassificationChanges quality={quality} disabled={false} />);
+    const open = screen.getByRole('button', { name: '逐曲核对语言 · 英语' }); open.focus(); fireEvent.click(open, { detail: 0 });
+    await screen.findByText('待核对歌曲 1');
+    let complete!: (value: ClassificationChangesPage) => void;
+    vi.mocked(fetchClassificationChanges).mockImplementationOnce(() => new Promise((resolve) => { complete = resolve; }));
+    const heading = screen.getByRole('heading', { name: '语言 · 英语 · 逐曲变动' });
+    const focus = vi.spyOn(heading, 'focus'), scroll = vi.fn(); heading.scrollIntoView = scroll;
+    const next = screen.getByRole('button', { name: '下一页变动' }); next.focus(); fireEvent.click(next, { detail: 0 });
+    expect(next.isConnected).toBe(false); expect(document.activeElement).toBe(document.body);
+    fireEvent.keyDown(document.body, { key });
+    await act(async () => { complete(page(50)); });
+    expect(screen.getByText('待核对歌曲 51')).toBeTruthy();
+    expect(document.activeElement).toBe(document.body); expect(focus).not.toHaveBeenCalled(); expect(scroll).not.toHaveBeenCalled();
+  });
+
+  it('keeps normal Enter activation and its successful paging focus', async () => {
+    render(<ClassificationChanges quality={quality} disabled={false} />);
+    const open = screen.getByRole('button', { name: '逐曲核对语言 · 英语' }); open.focus();
+    fireEvent.keyDown(open, { key: 'Enter' }); fireEvent.click(open, { detail: 0 });
+    await screen.findByText('待核对歌曲 1');
+    let complete!: (value: ClassificationChangesPage) => void;
+    vi.mocked(fetchClassificationChanges).mockImplementationOnce(() => new Promise((resolve) => { complete = resolve; }));
+    const heading = screen.getByRole('heading', { name: '语言 · 英语 · 逐曲变动' });
+    const scroll = vi.fn(); heading.scrollIntoView = scroll;
+    const next = screen.getByRole('button', { name: '下一页变动' }); next.focus();
+    fireEvent.keyDown(next, { key: 'Enter' }); fireEvent.click(next, { detail: 0 });
+    fireEvent.keyDown(document.body, { key: 'Enter' });
+    await act(async () => { complete(page(50)); });
+    expect(document.activeElement).toBe(heading); expect(scroll).toHaveBeenCalledWith({ block: 'start' });
+  });
+
+  it.each(['blur', 'pointer', 'wheel'] as const)('does not reclaim focus or scroll after user %s during an expansion read', async (action) => {
+    let complete!: (value: ClassificationChangesPage) => void;
+    vi.mocked(fetchClassificationChanges).mockImplementationOnce(() => new Promise((resolve) => { complete = resolve; }));
+    render(<><p>其他内容</p><ClassificationChanges quality={quality} disabled={false} /></>);
+    const open = screen.getByRole('button', { name: '逐曲核对语言 · 英语' }); open.focus(); fireEvent.click(open, { detail: 0 });
+    const heading = screen.getByRole('heading', { name: '语言 · 英语 · 逐曲变动' });
+    const focus = vi.spyOn(heading, 'focus'), scroll = vi.fn(); heading.scrollIntoView = scroll;
+    if (action === 'blur') open.blur();
+    else if (action === 'pointer') fireEvent.pointerDown(screen.getByText('其他内容'));
+    else fireEvent.wheel(document, { deltaY: 100 });
+    await act(async () => { complete(page()); });
+    expect(focus).not.toHaveBeenCalled(); expect(scroll).not.toHaveBeenCalled();
+  });
+
+  it('returns focus to the opener on close only when focus belongs to the detail', async () => {
+    render(<><button>其他操作</button><ClassificationChanges quality={quality} disabled={false} /></>);
+    const open = screen.getByRole('button', { name: '逐曲核对语言 · 英语' });
+    open.focus(); fireEvent.click(open, { detail: 0 });
+    await screen.findByText('待核对歌曲 1');
+    const close = screen.getByRole('button', { name: '收起逐曲核对' }); close.focus();
+    fireEvent.click(close, { detail: 0 });
+    expect(document.activeElement).toBe(open);
+    open.focus(); fireEvent.click(open, { detail: 0 }); await screen.findByText('待核对歌曲 1');
+    const other = screen.getByRole('button', { name: '其他操作' }); other.focus();
+    fireEvent.click(screen.getByRole('button', { name: '收起逐曲核对' }), { detail: 0 });
+    expect(document.activeElement).toBe(other);
+  });
+
+  it('does not focus or scroll a detail whose read fails', async () => {
+    vi.mocked(fetchClassificationChanges).mockRejectedValueOnce(new Error('变动读取失败'));
+    render(<ClassificationChanges quality={quality} disabled={false} />);
+    const open = screen.getByRole('button', { name: '逐曲核对语言 · 英语' }); open.focus();
+    fireEvent.click(open, { detail: 0 });
+    const heading = screen.getByRole('heading', { name: '语言 · 英语 · 逐曲变动' });
+    const scroll = vi.fn(); heading.scrollIntoView = scroll;
+    await screen.findByRole('alert');
+    expect(document.activeElement).toBe(open); expect(scroll).not.toHaveBeenCalled();
+  });
+
+  it.each(['source', 'revision', 'disabled'] as const)('does not focus a late result after parent %s changes', async (kind) => {
+    let complete!: (value: ClassificationChangesPage) => void;
+    vi.mocked(fetchClassificationChanges).mockImplementationOnce(() => new Promise((resolve) => { complete = resolve; }));
+    const view = render(<ClassificationChanges quality={quality} disabled={false} />);
+    const open = screen.getByRole('button', { name: '逐曲核对语言 · 英语' }); open.focus(); fireEvent.click(open, { detail: 0 });
+    const heading = screen.getByRole('heading', { name: '语言 · 英语 · 逐曲变动' });
+    const focus = vi.spyOn(heading, 'focus'), scroll = vi.fn(); heading.scrollIntoView = scroll;
+    const changed = { ...quality, ...(kind === 'source' ? { source_version: 'c'.repeat(64) } : kind === 'revision' ? { revision: 3 } : {}) };
+    view.rerender(<ClassificationChanges quality={changed} disabled={kind === 'disabled'} />);
+    await act(async () => { complete(page()); });
+    expect(focus).not.toHaveBeenCalled(); expect(scroll).not.toHaveBeenCalled();
+  });
+
   it('loads actual changed tracks only when opened and pages the same playlist', async () => {
     await act(async () => { render(<ClassificationChanges quality={quality} disabled={false} />); });
     expect(vi.mocked(fetchClassificationChanges)).not.toHaveBeenCalled();

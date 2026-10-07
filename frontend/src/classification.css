@@ -73,9 +73,15 @@
 .classification-editor-labels label { display: flex; align-items: center; gap: 5px; }
 .classification-editor-input { display: grid; gap: 5px; margin-bottom: 12px; }
 .classification-editor-input input,
+.classification-editor-input textarea,
 .classification-editor-input select { width: 100%; min-width: 0; box-sizing: border-box; padding: 9px; border: 1px solid #dbd5de; border-radius: 6px; background: white; font: inherit; }
+.classification-editor-input textarea { resize: vertical; line-height: 1.7; }
 .classification-editor input:focus-visible,
+.classification-editor textarea:focus-visible,
 .classification-editor select:focus-visible { outline: 2px solid var(--red); outline-offset: 2px; }
+.classification-unsaved { color: #956b26; font-size: 11px; }
+.classification-diff p,
+.classification-changed-tracks p { white-space: pre-wrap; }
 .classification-editor-error { color: #9c3838; font-size: 12px; line-height: 1.7; }
 .classification-basis-note { padding: 10px 14px; border: 1px solid #d9dfdf; border-radius: 8px; background: #f4f8f7; font-size: 12px; line-height: 1.8; }
 .classification-basis-note p { margin: 0; }

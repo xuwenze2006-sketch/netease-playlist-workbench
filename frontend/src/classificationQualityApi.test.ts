@@ -19,6 +19,20 @@ function raw() {
 }
 afterEach(() => vi.unstubAllGlobals());
 describe('classification quality API boundary', () => {
+  it('round trips multiline correction evidence through the draft POST and classification response', async () => {
+    const multiline = { ...payload, reason: '录音依据\n场景依据', recording_note: '专辑版本\n已核对人声' };
+    const fetcher = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ accepted: true, message: '已保存', revision: 4, changed_count: 1 }) });
+    vi.stubGlobal('fetch', fetcher);
+    await postClassificationDraft('s', multiline);
+    expect(JSON.parse(fetcher.mock.calls[0][1].body)).toMatchObject({ reason: '录音依据\n场景依据', recording_note: '专辑版本\n已核对人声' });
+    const data = raw(); data.records[0].draft = multiline as never;
+    expect(normalizeClassification(data, request).records[0].draft).toMatchObject({ reason: multiline.reason, recording_note: multiline.recording_note });
+  });
+  it.each(['\r', '\t', '\u0000', '\u007f', '\u0085'])('rejects other control characters in correction evidence: %j', async (control) => {
+    const fetcher = vi.fn(); vi.stubGlobal('fetch', fetcher);
+    await expect(postClassificationDraft('s', { ...payload, reason: '依据' + control + '结尾' })).rejects.toThrow();
+    expect(fetcher).not.toHaveBeenCalled();
+  });
   it('echoes explicit draft basis and preserves draft summary and recording clues', () => {
     const value = raw() as ReturnType<typeof raw> & Record<string, unknown>;
     value.filters = { ...request, basis: 'draft' } as never;

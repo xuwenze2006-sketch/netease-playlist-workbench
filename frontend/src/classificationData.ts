@@ -11,9 +11,11 @@ function integer(value: unknown, max = 10000): number {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0 || value > max) return fail();
   return value;
 }
-function text(value: unknown, maximum = 512, empty = false): string {
+function text(value: unknown, maximum = 512, empty = false, multiline = false): string {
+  const controls = multiline ? /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\ud800-\udfff]/u
+    : /[\u0000-\u001f\u007f-\u009f\ud800-\udfff]/u;
   if (typeof value !== 'string' || (!empty && !value.trim()) || Array.from(value).length > maximum ||
-    /[\u0000-\u001f\u007f-\u009f\ud800-\udfff]/u.test(value)) return fail();
+    controls.test(value)) return fail();
   return value;
 }
 function array(value: unknown, max: number): unknown[] {
@@ -108,7 +110,7 @@ export function normalizeClassification(value: unknown, request: ClassificationQ
     if (row.draft !== null) {
       const raw = object(row.draft);
       draft = { styles: texts(raw.styles, 2), scenes: texts(raw.scenes, 3), language: text(raw.language, 160),
-        reason: text(raw.reason, 1000), recording_note: text(raw.recording_note, 1000, true) };
+        reason: text(raw.reason, 1000, false, true), recording_note: text(raw.recording_note, 1000, true, true) };
       if (!validCorrection(draft)) return fail();
     }
     return { ...record, record_key: recordKey, style_judgment_score: score as number | null,

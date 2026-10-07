@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import { fetchClassification, postClassificationDraft, readSession } from './api';
 import { ClassificationEditor, ClassificationQualitySummary } from './ClassificationEditor';
+import type { ClassificationEditSession } from './ClassificationEditor';
 import { REVIEW_LABELS } from './classificationQuality';
 import { Icon } from './icons';
 import type { ClassificationDimension, ClassificationDraftRequest, ClassificationPage } from './types';
@@ -33,9 +34,14 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
   const [pageNotice, setPageNotice] = useState('');
   const [draftSubmitting, setDraftSubmitting] = useState(false);
   const mutationLock = useRef(false);
+  const editSessions = useRef(new Map<string, ClassificationEditSession>());
+  const editGeneration = useRef('');
   const generation = useRef(0);
   const refreshRequested = useRef(false);
   const resultsHeading = useRef<HTMLHeadingElement>(null);
+  const panel = useRef<HTMLDivElement>(null);
+  const saveIntent = useRef<{ source: HTMLElement; selection: Selection; sourceVersion: string;
+    recordKey: string; revision: number | null } | null>(null);
   const songTab = useRef<HTMLButtonElement>(null);
   const playlistTab = useRef<HTMLButtonElement>(null);
   const pageIntent = useRef<{
@@ -59,6 +65,7 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
   useEffect(() => {
     if (!active) {
       pageIntent.current = null;
+      saveIntent.current = null;
       return;
     }
     const query = input.trim();
@@ -100,6 +107,12 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
           setSelection((value) => ({ ...value, offset: 0 }));
           return;
         }
+        const identity = result.quality ? `${result.quality.source_version}:${result.quality.revision}` : '';
+        if (identity !== editGeneration.current || result.quality?.draft_status !== 'ready') {
+          if (editSessions.current.size) setPageNotice('资料版本或草稿状态已变化，旧的未保存编辑已清除，请重新核对。');
+          editSessions.current.clear();
+          editGeneration.current = identity;
+        }
         setSaved({ page: result, selection });
       } catch {
         if (!disposed && current === generation.current) {
@@ -124,11 +137,26 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
     const cancelOnMove = (event: FocusEvent) => {
       if (pageIntent.current && event.target !== pageIntent.current.source)
         pageIntent.current = null;
+      if (saveIntent.current && event.target !== saveIntent.current.source) saveIntent.current = null;
+    };
+    const cancelSaveOnPointer = (event: PointerEvent) => {
+      if (saveIntent.current && !saveIntent.current.source.contains(event.target as Node)) saveIntent.current = null;
+    };
+    const cancelSaveOnWheel = () => { saveIntent.current = null; };
+    const cancelSaveOnKey = (event: globalThis.KeyboardEvent) => {
+      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) saveIntent.current = null;
     };
     document.addEventListener('focusin', cancelOnMove);
+    document.addEventListener('pointerdown', cancelSaveOnPointer);
+    document.addEventListener('wheel', cancelSaveOnWheel, { passive: true });
+    document.addEventListener('keydown', cancelSaveOnKey);
     return () => {
       document.removeEventListener('focusin', cancelOnMove);
+      document.removeEventListener('pointerdown', cancelSaveOnPointer);
+      document.removeEventListener('wheel', cancelSaveOnWheel);
+      document.removeEventListener('keydown', cancelSaveOnKey);
       pageIntent.current = null;
+      saveIntent.current = null;
     };
   }, [active]);
 
@@ -152,6 +180,20 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
     resultsHeading.current?.scrollIntoView?.({ block: 'start' });
   }, [active, view, waiting, failed, available, currentData, selection]);
 
+  useEffect(() => {
+    const intent = saveIntent.current;
+    if (!intent || intent.revision === null || waiting || draftSubmitting) return;
+    saveIntent.current = null;
+    if (!active || view !== 'songs' || failed || !available || selection !== intent.selection ||
+      currentData?.quality?.source_version !== intent.sourceVersion || currentData.quality.revision !== intent.revision ||
+      currentData.quality.draft_status !== 'ready') return;
+    if (document.activeElement !== intent.source &&
+      !(!intent.source.isConnected && document.activeElement === document.body)) return;
+    const target = panel.current?.querySelector<HTMLButtonElement>(
+      `[data-record-key="${intent.recordKey}"] .classification-edit-toggle`);
+    (target ?? resultsHeading.current)?.focus({ preventScroll: true });
+  }, [active, view, waiting, draftSubmitting, failed, available, currentData, selection]);
+
   function filter(change: Partial<Selection>) {
     pageIntent.current = null;
     refreshRequested.current = false;
@@ -163,7 +205,8 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
     refreshRequested.current = false;
     setPageNotice('');
     setInput('');
-    setSelection({ ...INITIAL, review: pending ? 'pending' : 'all', ...(basis ? { basis } : {}) });
+    const nextBasis = basis ?? selection.basis;
+    setSelection({ ...INITIAL, review: pending ? 'pending' : 'all', ...(nextBasis ? { basis: nextBasis } : {}) });
     if (pending) setView('songs');
   }
   function openQualityReview(review: 'needs_review' | 'pilot' | 'draft') {
@@ -207,14 +250,22 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
       throw new Error('分类记录正在更新，请重新读取后保存修正。');
     mutationLock.current = true;
     setDraftSubmitting(true);
+    const source = document.activeElement;
+    saveIntent.current = source instanceof HTMLElement &&
+      source.closest('.classification-track')?.getAttribute('data-record-key') === request.record_key
+      ? { source, selection, sourceVersion: request.source_version, recordKey: request.record_key, revision: null } : null;
     try {
       const result = await postClassificationDraft(readSession(), request);
+      if (saveIntent.current) saveIntent.current.revision = result.revision;
       // A GET started while this POST was pending may contain an older draft.
       // Invalidate it before requesting the accepted revision from local records.
       generation.current += 1;
       setLoading(true);
       setPageNotice(result.message);
       refresh();
+    } catch (error) {
+      saveIntent.current = null;
+      throw error;
     } finally {
       mutationLock.current = false;
       setDraftSubmitting(false);
@@ -268,7 +319,7 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
   const unavailable = !waiting && !failed && !available;
 
   return (
-    <div className="classification-panel" hidden={!active}>
+    <div ref={panel} className="classification-panel" hidden={!active}>
       <div className="page-heading">
         <div>
           <span className="eyebrow">CLASSIFICATION RESULTS</span>
@@ -341,7 +392,7 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
               {(label === '待辨识' || label === '修正后待辨识') && (
                 <button className="classification-inline" onClick={() => {
                   if (applyingDraft) clear(true, 'draft');
-                  else clear(true);
+                  else clear(true, data?.quality ? 'original' : undefined);
                 }}>
                   查看全部待辨识
                 </button>
@@ -512,13 +563,15 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
                 {currentData.records.length ? (
                   <div className="classification-track-list">
                     {currentData.records.map((track) => {
+                      const editIdentity = currentData.quality
+                        ? `${currentData.quality.source_version}:${currentData.quality.revision}:${track.record_key}` : '';
                       const displayed = applyingDraft && track.draft ? track.draft : track;
                       const pending = applyingDraft && track.draft
                         ? track.draft.styles.includes('待辨识') || track.draft.language === '待辨识'
                         : track.pending_reasons.length > 0;
                       return (
-                      <article className="classification-track" key={currentData.quality
-                        ? `${currentData.quality.source_version}:${currentData.quality.revision}:${track.record_key}`
+                      <article className="classification-track" data-record-key={track.record_key} key={currentData.quality
+                        ? `${editIdentity}:${currentData.quality.draft_status}`
                         : track.position}>
                         <span className="classification-position">{track.position}</span>
                         <div className="classification-track-content">
@@ -559,6 +612,10 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
                           </details>
                           {currentData.quality && track.record_key && <ClassificationEditor
                             track={track} quality={currentData.quality} disabled={waiting || failed || draftSubmitting || !active}
+                            session={editSessions.current.get(editIdentity)} onSessionChange={(session) => {
+                              if (session && editIdentity.startsWith(`${editGeneration.current}:`)) editSessions.current.set(editIdentity, session);
+                              else editSessions.current.delete(editIdentity);
+                            }}
                             onSubmit={submitDraft} />}
                         </div>
                       </article>
@@ -643,7 +700,7 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
                           : undefined
                       }
                       onClick={() => {
-                        if (dimension === 'review') clear(true);
+                        if (dimension === 'review') clear(true, data?.quality ? 'original' : undefined);
                         else if (tag) chooseTag(dimension, tag);
                       }}
                     >

@@ -37,6 +37,9 @@ ASSERTIONS = (
     "zero_account_action_posts", "exactly_two_draft_posts", "zero_external_requests",
     "served_assets_match", "no_browser_storage_state", "version_hint_filter",
     "draft_basis_tag_filter", "per_song_added_preview", "per_song_removed_preview",
+    "collapsed_editor_keeps_unsaved", "filtered_return_keeps_unsaved", "multiline_evidence_roundtrip",
+    "keyboard_save_focus", "keyboard_changes_focus", "changes_close_focus", "clear_filters_keeps_basis",
+    "narrow_changes_no_horizontal_overflow", "discard_only_unsaved",
 )
 STAGES = frozenset(("startup", "review", "conflict", "low_score", "editing", "save",
                     "preview", "version", "basis", "changes", "reload", "narrow", "wide", "revert", "proof"))
@@ -90,8 +93,8 @@ def browser_script(url, run_id, assets_hash, manifest, wide, narrow):
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     require(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1 && document.body.scrollWidth <= innerWidth + 1));
   };
-  const reason = '试听确认该专辑录音强度平稳，更适合睡前放松';
-  const version = '模拟验收：专辑录音版本，已排除现场与混音';
+  const reason = '试听确认该专辑录音强度平稳\n更适合睡前放松';
+  const version = '模拟验收：专辑录音版本\n已排除现场与混音';
   try {
     await page.setViewportSize({width: 1440, height: 1000});
     await page.goto(base + '#classification', {waitUntil: 'domcontentloaded'});
@@ -120,8 +123,19 @@ def browser_script(url, run_id, assets_hash, manifest, wide, narrow):
     await editor().getByRole('checkbox', {name: '放松睡前', exact: true}).check();
     await editor().getByRole('textbox', {name: '修正理由', exact: true}).fill(reason);
     await editor().getByRole('textbox', {name: '录音版本依据', exact: true}).fill(version);
+    require(await editor().getByRole('textbox', {name: '修正理由', exact: true}).evaluate(el => el.tagName === 'TEXTAREA'));
+    await first().getByRole('button', {name: '收起修正', exact: true}).click();
+    await first().getByRole('button', {name: '修正分类', exact: true}).click();
+    require(await editor().getByRole('textbox', {name: '修正理由', exact: true}).inputValue() === reason &&
+      await editor().getByRole('checkbox', {name: '放松睡前', exact: true}).isChecked());
+    assertions.collapsed_editor_keeps_unsaved = true;
+    await review().selectOption('low_confidence'); await waitPositions([2]);
+    await review().selectOption('all'); await waitPositions([1, 2, 3, 4]);
+    require(await editor().getByRole('textbox', {name: '修正理由', exact: true}).inputValue() === reason &&
+      await editor().getByRole('textbox', {name: '录音版本依据', exact: true}).inputValue() === version);
+    assertions.filtered_return_keeps_unsaved = true;
     stage = 'save';
-    await editor().getByRole('button', {name: '保存本地修正', exact: true}).click();
+    await editor().getByRole('textbox', {name: '修正理由', exact: true}).press('Control+Enter');
     await page.getByRole('region', {name: '分类质量与修正草稿', exact: true}).getByText('本地修正 · 1 首', {exact: true}).waitFor();
     await first().getByText(reason, {exact: true}).waitFor();
     let data = await read('/api/classification?limit=50');
@@ -130,6 +144,9 @@ def browser_script(url, run_id, assets_hash, manifest, wide, narrow):
       JSON.stringify(data.records[0].draft.scenes) === '["放松睡前"]' && data.records[0].draft.reason === reason &&
       data.records[0].draft.recording_note === version);
     assertions.local_correction_saved = true;
+    require(await first().getByRole('button', {name: '编辑本地修正', exact: true}).evaluate(el => el === document.activeElement));
+    assertions.keyboard_save_focus = true;
+    assertions.multiline_evidence_roundtrip = true;
     require((await first().getByLabel('本地修正前后对照', {exact: true}).innerText()).includes('通勤散步 → 放松睡前'));
     assertions.baseline_and_draft_separate = true;
     stage = 'preview';
@@ -142,13 +159,20 @@ def browser_script(url, run_id, assets_hash, manifest, wide, narrow):
     await quality.getByText('加入 1 首', {exact: true}).waitFor();
     assertions.playlist_changes_preview = true;
     stage = 'changes';
-    await quality.getByRole('button', {name: '逐曲核对场景 · 放松睡前', exact: true}).click();
+    const changeOpener = quality.getByRole('button', {name: '逐曲核对场景 · 放松睡前', exact: true});
+    await changeOpener.focus(); await changeOpener.press('Enter');
     let changes = page.getByRole('region', {name: '歌单变动：场景 · 放松睡前', exact: true});
     await changes.getByText(reason, {exact: true}).waitFor();
     require((await changes.innerText()).includes('Rain · 雨の音') && (await changes.innerText()).includes(version));
+    require(await changes.getByRole('heading', {name: '场景 · 放松睡前 · 逐曲变动', exact: true}).evaluate(el => el === document.activeElement));
+    assertions.keyboard_changes_focus = true;
     await changes.getByRole('combobox', {name: '变动方向', exact: true}).selectOption('added');
     await changes.getByText(reason, {exact: true}).waitFor();
     assertions.per_song_added_preview = true;
+    await changes.getByRole('button', {name: '收起逐曲核对', exact: true}).focus();
+    await changes.getByRole('button', {name: '收起逐曲核对', exact: true}).press('Enter');
+    require(await changeOpener.evaluate(el => el === document.activeElement));
+    assertions.changes_close_focus = true;
     await quality.getByRole('button', {name: '逐曲核对场景 · 通勤散步', exact: true}).click();
     changes = page.getByRole('region', {name: '歌单变动：场景 · 通勤散步', exact: true});
     await changes.getByRole('combobox', {name: '变动方向', exact: true}).selectOption('removed');
@@ -165,6 +189,12 @@ def browser_script(url, run_id, assets_hash, manifest, wide, narrow):
     stage = 'wide';
     await noOverflow(); assertions.wide_no_horizontal_overflow = true;
     await page.screenshot({path: wide, fullPage: true});
+    await page.getByRole('button', {name: '清除全部筛选', exact: true}).click(); await waitPositions([1, 2, 3, 4]);
+    require(await records().getByRole('combobox', {name: '分类依据', exact: true}).inputValue() === 'draft');
+    assertions.clear_filters_keeps_basis = true;
+    await page.setViewportSize({width: 390, height: 844});
+    await changes.getByText(reason, {exact: true}).waitFor();
+    await noOverflow(); assertions.narrow_changes_no_horizontal_overflow = true;
     stage = 'reload';
     await page.reload(); await waitPositions([1, 2, 3, 4]);
     await first().getByText(reason, {exact: true}).waitFor();
@@ -175,6 +205,10 @@ def browser_script(url, run_id, assets_hash, manifest, wide, narrow):
     await page.setViewportSize({width: 390, height: 844});
     await first().getByRole('button', {name: '编辑本地修正', exact: true}).click();
     require(await editor().getByRole('textbox', {name: '修正理由', exact: true}).inputValue() === reason);
+    await editor().getByRole('textbox', {name: '修正理由', exact: true}).fill('尚未保存的临时输入');
+    await editor().getByRole('button', {name: '放弃未保存修改', exact: true}).click();
+    require(await editor().getByRole('textbox', {name: '修正理由', exact: true}).inputValue() === reason && draftPosts === 1);
+    assertions.discard_only_unsaved = true;
     await noOverflow(); assertions.narrow_editor_no_horizontal_overflow = true;
     await editor().scrollIntoViewIfNeeded();
     await page.screenshot({path: narrow, fullPage: true});

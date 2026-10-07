@@ -68,8 +68,10 @@ def _revision(value):
 
 
 def _text(value, *, empty=False):
+    """Validate evidence text, preserving LF while rejecting other controls."""
     if (type(value) is not str or len(value) > 1000 or not empty and not value.strip()
-            or any(ord(char) < 32 or 127 <= ord(char) <= 159 or 0xD800 <= ord(char) <= 0xDFFF
+            or any((ord(char) < 32 and char != '\n')
+                   or 127 <= ord(char) <= 159 or 0xD800 <= ord(char) <= 0xDFFF
                    for char in value)):
         _fail()
     return value

@@ -12,7 +12,7 @@ export const REVIEW_LABELS: Record<ClassificationReview, string> = {
 
 function safeText(value: unknown, empty = false): value is string {
   return typeof value === 'string' && (empty || !!value.trim()) && Array.from(value).length <= 1000 &&
-    !/[\u0000-\u001f\u007f-\u009f\ud800-\udfff]/u.test(value);
+    !/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\ud800-\udfff]/u.test(value);
 }
 function labels(value: unknown, allowed: string[], maximum: number): value is string[] {
   return Array.isArray(value) && value.length <= maximum && new Set(value).size === value.length &&

@@ -10,6 +10,15 @@ function page() {
 }
 afterEach(() => vi.unstubAllGlobals());
 describe('classification change read boundary', () => {
+  it('preserves newlines only in per-song correction evidence', async () => {
+    const value = page(); value.records[0].reason = '人声依据\n场景依据'; value.records[0].recording_note = '专辑版\n已核对';
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => value }));
+    const parsed = await fetchClassificationChanges('s', query);
+    expect(parsed.records[0].reason).toBe('人声依据\n场景依据');
+    expect(parsed.records[0].recording_note).toBe('专辑版\n已核对');
+    value.records[0].name = '不合法\n标题';
+    await expect(fetchClassificationChanges('s', query)).rejects.toThrow();
+  });
   it('reads the exact parent identity and whitelists changed records', async () => {
     const value = page();
     const fetcher = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ...value, token: 'PRIVATE', records: value.records.map((row) => ({ ...row, id: 'PRIVATE' })) }) });

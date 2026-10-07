@@ -379,6 +379,29 @@ class QualityDraftHttpTests(unittest.TestCase):
         self.assertEqual(self.controller.calls, [('doctor', {})])
         self.assertEqual(self.controller.prepared, [])
 
+    def test_multiline_evidence_is_preserved_by_post_get_and_per_song_changes(self):
+        f = self.fixture
+        before = {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+                  for p in (f.project / 'artifacts').iterdir()}
+        original = f.view()
+        body = self.request(original)
+        body['reason'] = '前奏较平缓\n主体强度需要再核对\n'
+        body['recording_note'] = '\n专辑原版🎧\n00:30–01:20 人声核对\n'
+        self.assertEqual(self.post(body)[0], 200)
+        status, page = self.get('/api/classification?basis=draft&review=draft')
+        self.assertEqual(status, 200)
+        status, changes = self.get(self.changes_url())
+        self.assertEqual(status, 200)
+        for field in ('reason', 'recording_note'):
+            self.assertEqual(page['records'][0]['draft'][field], body[field])
+            self.assertEqual(changes['records'][0][field], body[field])
+        for field in ('styles', 'scenes', 'language', 'pending_reasons'):
+            self.assertEqual(page['records'][0][field], original['records'][0][field])
+        self.assertEqual(before, {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+                                 for p in (f.project / 'artifacts').iterdir()})
+        self.assertEqual(self.controller.calls, [('doctor', {})])
+        self.assertEqual(self.controller.prepared, [])
+
     def test_conflicting_revision_or_source_returns_409(self):
         body = self.request(self.fixture.view())
         self.assertEqual(self.post(body)[0], 200)

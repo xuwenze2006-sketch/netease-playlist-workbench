@@ -46,6 +46,147 @@ beforeEach(() => {
 });
 
 describe('classification review and local corrections', () => {
+  it('retains unsaved labels and multiline evidence when the editor is collapsed and reopened', async () => {
+    await open(); await edit();
+    fireEvent.click(editor().getByLabelText('学习专注'));
+    fireEvent.change(editor().getByLabelText('修正理由'), { target: { value: '第一段依据\n第二段依据' } });
+    fireEvent.change(editor().getByLabelText('录音版本依据'), { target: { value: '专辑版\n核对了人声' } });
+    fireEvent.click(screen.getByRole('button', { name: '收起修正' }));
+    await edit();
+    expect(editor().getByLabelText('修正理由')).toHaveProperty('value', '第一段依据\n第二段依据');
+    expect(editor().getByLabelText('录音版本依据')).toHaveProperty('value', '专辑版\n核对了人声');
+    expect(editor().getByLabelText('学习专注')).toHaveProperty('checked', true);
+    expect(vi.mocked(postClassificationDraft)).not.toHaveBeenCalled();
+  });
+
+  it('restores only the matching unsaved editor after filtering the song out and returning', async () => {
+    await open(); await edit();
+    fireEvent.change(editor().getByLabelText('修正理由'), { target: { value: '筛选返回后仍保留' } });
+    vi.mocked(fetchClassification).mockImplementation(async (_session, request) => ({ ...page(), filters: request,
+      ...(request.review === 'pending' ? { records: [], pagination: { offset: 0, limit: 50, total: 0, next_offset: null } } : {}) }));
+    fireEvent.change(screen.getByLabelText('复核筛选'), { target: { value: 'pending' } });
+    await screen.findByText('没有匹配的曲目');
+    fireEvent.click(screen.getByRole('button', { name: '清除全部筛选' }));
+    await screen.findByRole('group', { name: '修正版本有疑问的歌' });
+    expect(editor().getByLabelText('修正理由')).toHaveProperty('value', '筛选返回后仍保留');
+    expect(vi.mocked(postClassificationDraft)).not.toHaveBeenCalled();
+  });
+
+  it('discards only unsaved changes back to the saved correction without posting', async () => {
+    const draft = { styles: ['摇滚与独立'], scenes: [], language: '英语', reason: '已保存的依据', recording_note: '专辑版' };
+    await open(page(1, draft));
+    fireEvent.click(screen.getByRole('button', { name: '编辑本地修正' }));
+    fireEvent.change(editor().getByLabelText('修正理由'), { target: { value: '尚未保存的更改' } });
+    fireEvent.click(editor().getByLabelText('学习专注'));
+    fireEvent.click(editor().getByRole('button', { name: '放弃未保存修改' }));
+    expect(editor().getByLabelText('修正理由')).toHaveProperty('value', '已保存的依据');
+    expect(editor().getByLabelText('学习专注')).toHaveProperty('checked', false);
+    expect(screen.getByText('本地修正 · 1 首')).toBeTruthy();
+    expect(vi.mocked(postClassificationDraft)).not.toHaveBeenCalled();
+  });
+
+  it('does not revive an old cached editor after a revision changes and an older revision is seen again', async () => {
+    await open(); await edit();
+    fireEvent.change(editor().getByLabelText('修正理由'), { target: { value: '旧修订的未保存依据' } });
+    vi.mocked(fetchClassification).mockImplementation(async (_session, request) => ({ ...page(1), filters: request }));
+    fireEvent.click(screen.getByRole('button', { name: '刷新分类记录' }));
+    await waitFor(() => expect(screen.queryByRole('group', { name: '修正版本有疑问的歌' })).toBeNull());
+    vi.mocked(fetchClassification).mockImplementation(async (_session, request) => ({ ...page(), filters: request }));
+    fireEvent.click(screen.getByRole('button', { name: '刷新分类记录' }));
+    await waitFor(() => expect(screen.getByRole('region', { name: '逐曲分类结果' }).getAttribute('aria-busy')).toBe('false'));
+    await edit();
+    expect(editor().getByLabelText('修正理由')).toHaveProperty('value', '');
+    expect(vi.mocked(postClassificationDraft)).not.toHaveBeenCalled();
+  });
+
+  it('clears both the visible and cached editor if draft availability changes without a new revision', async () => {
+    await open(); await edit();
+    fireEvent.change(editor().getByLabelText('修正理由'), { target: { value: '损坏草稿之前的输入' } });
+    vi.mocked(fetchClassification).mockImplementation(async (_session, request) => ({ ...page(0, null, 'unavailable'), filters: request }));
+    fireEvent.click(screen.getByRole('button', { name: '刷新分类记录' }));
+    await screen.findByText(/本地修正草稿暂不可用/);
+    expect(screen.queryByRole('group', { name: '修正版本有疑问的歌' })).toBeNull();
+    vi.mocked(fetchClassification).mockImplementation(async (_session, request) => ({ ...page(), filters: request }));
+    fireEvent.click(screen.getByRole('button', { name: '刷新分类记录' }));
+    await waitFor(() => expect(screen.getByRole('region', { name: '逐曲分类结果' }).getAttribute('aria-busy')).toBe('false'));
+    await edit();
+    expect(editor().getByLabelText('修正理由')).toHaveProperty('value', '');
+    expect(vi.mocked(postClassificationDraft)).not.toHaveBeenCalled();
+  });
+
+  it('preserves the selected classification basis when clearing song filters', async () => {
+    await open();
+    fireEvent.change(screen.getByLabelText('分类依据'), { target: { value: 'draft' } });
+    await screen.findByText('修正后待辨识');
+    fireEvent.change(screen.getByLabelText('复核筛选'), { target: { value: 'conflict' } });
+    await waitFor(() => expect(screen.getByRole('region', { name: '逐曲分类结果' }).getAttribute('aria-busy')).toBe('false'));
+    fireEvent.click(screen.getByRole('button', { name: '清除全部筛选' }));
+    await waitFor(() => expect(vi.mocked(fetchClassification).mock.lastCall?.[1]).toMatchObject({ basis: 'draft', review: 'all', query: '', tag: '' }));
+    expect(screen.getByLabelText('分类依据')).toHaveProperty('value', 'draft');
+  });
+
+  it('focuses the multiline reason when opening and saves it once with Control Enter', async () => {
+    await open(); await edit();
+    const reason = editor().getByLabelText('修正理由');
+    expect(reason.tagName).toBe('TEXTAREA');
+    expect(document.activeElement).toBe(reason);
+    fireEvent.change(reason, { target: { value: '录音依据第一行\n第二行' } });
+    vi.mocked(postClassificationDraft).mockRejectedValue(new Error('模拟保存失败'));
+    fireEvent.keyDown(reason, { key: 'Enter', ctrlKey: true });
+    await screen.findByRole('alert');
+    expect(vi.mocked(postClassificationDraft)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(postClassificationDraft).mock.lastCall?.[1]).toMatchObject({ reason: '录音依据第一行\n第二行' });
+    expect(reason).toHaveProperty('value', '录音依据第一行\n第二行');
+  });
+
+  it('does not submit Control Enter while the input method is composing', async () => {
+    await open(); await edit();
+    const reason = editor().getByLabelText('修正理由');
+    fireEvent.change(reason, { target: { value: '输入法尚未结束的依据' } });
+    fireEvent.keyDown(reason, { key: 'Enter', ctrlKey: true, isComposing: true });
+    expect(vi.mocked(postClassificationDraft)).not.toHaveBeenCalled();
+    expect(reason).toHaveProperty('value', '输入法尚未结束的依据');
+  });
+
+  it('returns keyboard focus to the same song after saving and accepting a refreshed revision', async () => {
+    await open(); await edit();
+    fireEvent.change(editor().getByLabelText('修正理由'), { target: { value: '已完成版本核对' } });
+    const draft = { styles: ['流行抒情'], scenes: ['通勤散步'], language: '国语', reason: '已完成版本核对', recording_note: '' };
+    vi.mocked(postClassificationDraft).mockResolvedValue({ accepted: true, message: '已保存', revision: 1, changed_count: 1 });
+    vi.mocked(fetchClassification).mockImplementation(async (_session, request) => ({ ...page(1, draft), filters: request }));
+    const save = editor().getByRole('button', { name: '保存本地修正' }); save.focus(); fireEvent.click(save);
+    const reopen = await screen.findByRole('button', { name: '编辑本地修正' });
+    await waitFor(() => expect(document.activeElement).toBe(reopen));
+  });
+
+  it('does not reclaim focus if the user moves away while a correction is saving', async () => {
+    await open(); await edit();
+    fireEvent.change(editor().getByLabelText('修正理由'), { target: { value: '较晚返回的保存' } });
+    let accept!: (value: Awaited<ReturnType<typeof postClassificationDraft>>) => void;
+    vi.mocked(postClassificationDraft).mockImplementation(() => new Promise((resolve) => { accept = resolve; }));
+    const draft = { styles: ['流行抒情'], scenes: ['通勤散步'], language: '国语', reason: '较晚返回的保存', recording_note: '' };
+    vi.mocked(fetchClassification).mockImplementation(async (_session, request) => ({ ...page(1, draft), filters: request }));
+    const save = editor().getByRole('button', { name: '保存本地修正' }); save.focus(); fireEvent.click(save);
+    const search = screen.getByLabelText('搜索歌曲或歌手'); search.focus();
+    await act(async () => { accept({ accepted: true, message: '已保存', revision: 1, changed_count: 1 }); });
+    await screen.findByRole('button', { name: '编辑本地修正' });
+    expect(document.activeElement).toBe(search);
+  });
+
+  it('does not reclaim focus after keyboard scrolling while a save is pending', async () => {
+    await open(); await edit();
+    fireEvent.change(editor().getByLabelText('修正理由'), { target: { value: '保存时继续浏览其他内容' } });
+    let accept!: (value: Awaited<ReturnType<typeof postClassificationDraft>>) => void;
+    vi.mocked(postClassificationDraft).mockImplementation(() => new Promise((resolve) => { accept = resolve; }));
+    const draft = { styles: ['流行抒情'], scenes: ['通勤散步'], language: '国语', reason: '保存时继续浏览其他内容', recording_note: '' };
+    vi.mocked(fetchClassification).mockImplementation(async (_session, request) => ({ ...page(1, draft), filters: request }));
+    const save = editor().getByRole('button', { name: '保存本地修正' }); save.focus(); fireEvent.click(save);
+    fireEvent.keyDown(document, { key: 'PageDown' });
+    await act(async () => { accept({ accepted: true, message: '已保存', revision: 1, changed_count: 1 }); });
+    const reopen = await screen.findByRole('button', { name: '编辑本地修正' });
+    expect(document.activeElement).not.toBe(reopen);
+  });
+
   it('uses ready corrections as displayed labels only in the explicit draft basis and separates unknown counts', async () => {
     const draft = { styles: ['摇滚与独立'], scenes: ['放松睡前'], language: '英语', reason: '核对录音后修正', recording_note: '专辑版' };
     const data = page(1, draft);
@@ -61,7 +202,7 @@ describe('classification review and local corrections', () => {
     expect(track.getByRole('button', { name: '语言 · 英语' })).toBeTruthy();
     expect(track.queryByText('待辨识', { selector: '.pending-tag' })).toBeNull();
     expect(screen.getByText('修正后待辨识')).toBeTruthy();
-    expect(screen.getByText(/刷新、筛选、分页或保存.*关闭未保存编辑/)).toBeTruthy();
+    expect(screen.getByText(/未保存的输入仅保留在当前窗口/)).toBeTruthy();
     expect(data.records[0].language).toBe('待辨识');
   });
 

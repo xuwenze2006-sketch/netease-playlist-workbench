@@ -97,6 +97,36 @@ class ClassificationDraftTests(unittest.TestCase):
         self.assertEqual(result['changed_count'], 1)
         self.assertEqual(result['edits'][self.key]['before'], result['edits'][self.key]['after'])
 
+    def test_multiline_evidence_round_trips_exactly_without_changing_original_records(self):
+        original = copy.deepcopy(self.records)
+        source = self.project / 'artifacts' / 'source.json'
+        source.parent.mkdir()
+        source.write_bytes(b'UNCHANGED-ORIGINAL-FIXTURE')
+        reason = '前奏较平缓\n主体鼓点较密\n'
+        recording_note = '\n专辑原版🎧\n00:30–01:20 人声核对\n'
+        saved = self.save(reason=reason, recording_note=recording_note)
+        self.assertEqual(saved['edits'][self.key]['reason'], reason)
+        self.assertEqual(saved['edits'][self.key]['recording_note'], recording_note)
+        loaded = self.load()
+        self.assertEqual(loaded, saved)
+        disk = json.loads(self.path.read_text(encoding='utf-8'))
+        self.assertEqual(disk['edits'][self.key]['reason'], reason)
+        self.assertEqual(disk['edits'][self.key]['recording_note'], recording_note)
+        self.assertEqual(self.records, original)
+        self.assertEqual(source.read_bytes(), b'UNCHANGED-ORIGINAL-FIXTURE')
+
+    def test_multiline_evidence_limit_counts_unicode_codepoints_and_blank_reason_is_rejected(self):
+        reason = '🎧' * 999 + '\n'
+        result = self.save(reason=reason, recording_note='\n' * 1000)
+        self.assertEqual(result['edits'][self.key]['reason'], reason)
+        self.assertEqual(self.load()['edits'][self.key]['recording_note'], '\n' * 1000)
+        before = self.path.read_bytes()
+        for changes in ({'reason': '🎧' * 1000 + '\n'}, {'recording_note': '\n' * 1001},
+                        {'reason': '\n \n'}):
+            with self.subTest(changes=repr(changes)), self.assertRaises(self.drafts.DraftError):
+                self.save(revision=1, **changes)
+            self.assertEqual(self.path.read_bytes(), before)
+
     def test_returned_edits_cannot_mutate_disk_or_input_records(self):
         result = self.save()
         result['edits'][self.key]['before']['styles'].append('爵士与 Lo-Fi')
@@ -235,8 +265,11 @@ except drafts.DraftError as error:
             {'styles': ['pop']}, {'scenes': ['commute']}, {'scenes': ['通勤散步'] * 2},
             {'scenes': ['学习专注', '通勤散步', '放松睡前', '运动提神']},
             {'language': None}, {'language': 'en'}, {'reason': ''}, {'reason': '  '},
-            {'reason': 'a' * 1001}, {'reason': 'unsafe\ntext'}, {'recording_note': '\ud800'},
-            {'recording_note': '\x7f'}, {'recording_note': 'a' * 1001},
+            {'reason': 'a' * 1001}, {'reason': 'unsafe\rtext'}, {'reason': 'unsafe\ttext'},
+            {'reason': 'unsafe\x00text'}, {'recording_note': '\ud800'}, {'recording_note': '\udfff'},
+            {'recording_note': '\r'}, {'recording_note': '\t'}, {'recording_note': '\x00'},
+            {'recording_note': '\x1f'}, {'recording_note': '\x7f'}, {'recording_note': '\x85'},
+            {'recording_note': 'a' * 1001},
         ]
         for changes in cases:
             with self.subTest(changes=repr(changes)), self.assertRaises(self.drafts.DraftError):
