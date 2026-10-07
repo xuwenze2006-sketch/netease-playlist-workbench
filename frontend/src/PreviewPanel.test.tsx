@@ -5,7 +5,7 @@ import App from './App';
 const preview = {
   source: 'local_record',
   scope: 'full',
-  updated_at: '2026-10-04T04:00:00+08:00',
+  updated_at: new Date(2026, 9, 4, 4, 0, 0).toISOString(),
   rename_count: 1,
   renames: [{ key: 'rename-1', old_name: '01 旧分类', name: '01 · 新分类' }],
   artists: [
