@@ -78,14 +78,18 @@ class LocalTracksTests(unittest.TestCase):
 
     def test_unverifiable_directory_is_unavailable_and_preserves_saved_details(self):
         source = self.write('在线整理快照.json', snapshot())
+        # Exercise aliases because readers canonicalize their project directory.
+        source = source.parent / '..' / 'artifacts' / source.name
         self.save_detail()
         details = self.project / 'artifacts/歌单明细/34567890.json'
         saved_source, saved_details = source.read_bytes(), details.read_bytes()
         self.assertEqual(self.read('34567890')['status'], 'available')
         original_open = Path.open
+        blocked_reads = []
 
         def unreadable(path, *args, **kwargs):
-            if path == source:
+            if path.resolve() == source.resolve():
+                blocked_reads.append(path)
                 raise PermissionError('temporary fixture read failure')
             return original_open(path, *args, **kwargs)
 
@@ -100,6 +104,7 @@ class LocalTracksTests(unittest.TestCase):
                     if failure == 'unreadable':
                         with patch.object(Path, 'open', unreadable):
                             result = self.read('34567890')
+                        self.assertTrue(blocked_reads, 'permission failure was not injected')
                     else:
                         result = self.read('34567890')
                     self.assertEqual(result['status'], 'unavailable')

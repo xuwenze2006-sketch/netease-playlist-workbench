@@ -348,7 +348,8 @@ class WebServerTests(unittest.TestCase):
         artifacts = self.project / 'artifacts'
         folder = artifacts / '歌单明细'
         folder.mkdir(parents=True)
-        source = artifacts / '在线整理快照.json'
+        # Exercise aliases because readers canonicalize their project directory.
+        source = artifacts / '..' / 'artifacts' / '在线整理快照.json'
         source.write_text(json.dumps(snapshot(), ensure_ascii=False), encoding='utf-8')
         detail = record()
         detail['account'].update(id='A' * 32, original_id='12345678')
@@ -361,9 +362,11 @@ class WebServerTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(len(json.loads(body)['tracks']), 2)
         original_open = Path.open
+        blocked_reads = []
 
         def unreadable(path, *args, **kwargs):
-            if path == source:
+            if path.resolve() == source.resolve():
+                blocked_reads.append(path)
                 raise PermissionError('temporary fixture read failure')
             return original_open(path, *args, **kwargs)
 
@@ -378,6 +381,7 @@ class WebServerTests(unittest.TestCase):
                     if failure == 'unreadable':
                         with patch.object(Path, 'open', unreadable):
                             status, _, body = self.request('GET', target)
+                        self.assertTrue(blocked_reads, 'permission failure was not injected')
                     else:
                         status, _, body = self.request('GET', target)
                     self.assertEqual(status, 200)
