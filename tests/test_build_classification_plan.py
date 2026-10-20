@@ -1,0 +1,139 @@
+"""Offline plan generation preserves accepted manual language review state."""
+
+import contextlib
+import io
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from scripts import build_classification_plan as builder
+
+
+class LocalArtifactWriter:
+    """Replace Organizer construction, including its real CLI/cache dependencies."""
+
+    def __init__(self, root):
+        self.artifacts = Path(root) / 'artifacts'
+
+    def _write_artifact(self, filename, text):
+        (self.artifacts / filename).write_text(text, encoding='utf-8')
+
+
+class BuildClassificationPlanTests(unittest.TestCase):
+    def fixture(self, entry, *, wrapped=False, model=None):
+        directory = tempfile.TemporaryDirectory(prefix='classification-plan-fixture-')
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        artifacts = root / 'artifacts'
+        artifacts.mkdir()
+        track_id = 'A' * 32
+        inputs = {
+            '全库分类-账号基线.json': {'snapshot': {
+                'account': {'original_id': '1', 'id': 'B' * 32},
+                'liked': {'id': 'C' * 32, 'original_id': '2', 'track_count': 1,
+                          'membership_complete': True, 'tracks': [{
+                              'id': track_id, 'original_id': '3', 'name': '模拟录音',
+                              'artists': [{'name': '模拟艺人'}], 'metadata_available': True}]}}},
+            '分类判断-分块01.json': [[1, ['pop'], ['commute'], model, .9, '模拟录音风格依据']],
+            '分类判断-分块02.json': [],
+            '分类判断-分块03.json': [],
+            '全库分类-歌词特征.json': {'tracks': {'3': {
+                'status': 'ok', 'has_original_lyric_text': True, 'original_line_count': 54,
+                'script_counts': {'han': 391}, 'language_hints': ['zh_or_yue']}}},
+            '网易云本地歌单快照.json': {'tracks': {}},
+            '分类语言核验01.json': {'recommendations': [entry]} if wrapped else [entry],
+        }
+        for name, value in inputs.items():
+            (artifacts / name).write_text(json.dumps(value, ensure_ascii=False), encoding='utf-8')
+        return root
+
+    def invoke(self, root):
+        with patch.object(builder, '__file__', str(root / 'scripts/build_classification_plan.py')), \
+                patch.object(builder, 'Organizer', LocalArtifactWriter), \
+                contextlib.redirect_stdout(io.StringIO()):
+            builder.main()
+
+    def assert_result(self, root, *, language, assigned, review, reason='人工保留的版本依据'):
+        artifacts = root / 'artifacts'
+        report = json.loads((artifacts / '全库分类-逐曲结果.json').read_text(encoding='utf-8'))
+        reviews = json.loads((artifacts / '全库分类-需复核录音.json').read_text(encoding='utf-8'))
+        record = report['records'][0]
+        self.assertEqual(record['language'], language)
+        self.assertEqual(record['language_evidence_note'], '单曲录音复核：' + reason)
+        self.assertIs(record['review_note'], review)
+        self.assertEqual(report['summary']['review_note_count'], int(review))
+        self.assertEqual([item['position'] for item in reviews], [1] if review else [])
+        if review:
+            self.assertEqual(reviews[0]['assigned'], assigned)
+            self.assertEqual(reviews[0]['note'], record['language_evidence_note'])
+        plan = json.loads((artifacts / '分类整理计划.json').read_text(encoding='utf-8'))
+        self.assertEqual(plan['source_track_ids'], ['A' * 32])
+        self.assertEqual([job['name'] for job in plan['jobs'] if job['dimension'] == 'language'],
+                         ['语言 · 英语'] if assigned == 'en' else [])
+
+    def test_explicit_unresolved_review_survives_list_and_recommendations_inputs(self):
+        for wrapped, label, public in [(False, 'instrumental', '器乐或配乐录音'), (True, 'en', '英语')]:
+            with self.subTest(wrapped=wrapped):
+                entry = {'position': 1, 'language': label, 'confidence': 'high',
+                         'notes': '人工保留的版本依据', 'review_note': True}
+                root = self.fixture(entry, wrapped=wrapped)
+                self.invoke(root)
+                self.assert_result(root, language=public, assigned=label, review=True)
+
+    def test_explicit_resolution_overrides_legacy_wrong_lyric_and_reason_text(self):
+        entry = {'position': 1, 'suggested_language': 'instrumental', 'review_note': False,
+                 'flags': ['possible_wrong_lyric'], 'reason': '已核对旧提示“仍须复核”'}
+        root = self.fixture(entry)
+        self.invoke(root)
+        self.assert_result(root, language='器乐或配乐录音', assigned='instrumental', review=False,
+                           reason='已核对旧提示“仍须复核”')
+
+    def test_unknown_language_always_requires_review_even_when_explicitly_cleared(self):
+        entry = {'position': 1, 'language': None, 'review_note': False, 'notes': '人工保留的版本依据'}
+        root = self.fixture(entry)
+        self.invoke(root)
+        self.assert_result(root, language='待辨识', assigned=None, review=True)
+
+    def test_only_exact_legacy_wrong_lyric_flag_reopens_nonnull_manual_label(self):
+        cases = [({}, False), ({'flags': []}, False),
+                 ({'flags': ['version_marker', 'future_flag', 'possible_wrong_lyric_extra']}, False),
+                 ({'flags': ['version_marker', 'possible_wrong_lyric']}, True)]
+        for changes, review in cases:
+            with self.subTest(changes=changes):
+                entry = {'position': 1, 'language': 'instrumental', 'notes': '人工保留的版本依据', **changes}
+                root = self.fixture(entry)
+                self.invoke(root)
+                self.assert_result(root, language='器乐或配乐录音', assigned='instrumental', review=review)
+
+    def test_invalid_accepted_review_fields_fail_before_any_output_is_written(self):
+        cases = [('review_note', value) for value in (None, 0, 1, 'true', [], {})]
+        cases += [('flags', value) for value in (None, 'possible_wrong_lyric', {}, [False], [1], ['valid', None])]
+        for key, value in cases:
+            with self.subTest(field=key, value=value):
+                entry = {'position': 1, 'language': 'instrumental', key: value}
+                root = self.fixture(entry)
+                artifacts = root / 'artifacts'
+                before = {path.name: path.read_bytes() for path in artifacts.iterdir()}
+                with self.assertRaises(ValueError):
+                    self.invoke(root)
+                self.assertEqual({path.name: path.read_bytes() for path in artifacts.iterdir()}, before)
+
+    def test_ignored_recommendations_do_not_validate_or_apply_review_fields(self):
+        for confidence, model in [('low', None), ('high', 'en')]:
+            with self.subTest(confidence=confidence, model=model):
+                entry = {'position': 1, 'language': 'ja', 'confidence': confidence,
+                         'review_note': 'invalid but ignored', 'flags': None, 'notes': '不应采用'}
+                root = self.fixture(entry, wrapped=True, model=model)
+                self.invoke(root)
+                report = json.loads((root / 'artifacts/全库分类-逐曲结果.json').read_text(encoding='utf-8'))
+                record = report['records'][0]
+                self.assertEqual(record['language'], '国语' if model is None else '英语')
+                self.assertNotIn('不应采用', record['language_evidence_note'])
+                self.assertIs(record['review_note'], model is not None)
+                self.assertEqual(report['summary']['review_note_count'], 0 if model is None else 1)
+
+
+if __name__ == '__main__':
+    unittest.main()

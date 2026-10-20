@@ -38,8 +38,12 @@ def main():
             if isinstance(data,dict):
                 if label is not None and entry.get('confidence') not in ('high','medium'):continue
                 if label is not None and rows[pos-1][3] is not None:continue
+            if 'review_note' in entry and type(entry['review_note']) is not bool:raise ValueError('语言复核状态不兼容。')
+            flags=entry.get('flags',[])
+            if type(flags) is not list or any(type(flag) is not str for flag in flags):raise ValueError('语言复核标记不兼容。')
+            needs_review=label is None or entry.get('review_note','possible_wrong_lyric' in flags)
             reason=next((entry[k] for k in ('notes','reason','evidence') if type(entry.get(k)) is str and entry[k]),'单曲语言复核')
-            reviews[pos]=(label,reason)
+            reviews[pos]=(label,reason,needs_review)
     jobs={(d,k):[] for d,labels in [('scene',SCENES),('style',STYLES),('language',LANGUAGES)] for k in labels}
     pending=[];records=[];review=[]
     for row,t in zip(rows,tracks):
@@ -48,9 +52,8 @@ def main():
         if f['status']!='ok':raise ValueError('歌词资料读取未完成。')
         language,language_note,needs_review=infer_language(model,f)
         if pos in reviews:
-            language,language_note=reviews[pos]
+            language,language_note,needs_review=reviews[pos]
             language_note='单曲录音复核：'+language_note
-            needs_review=language is None
         reasons=[]
         if styles==['unknown']:reasons.append('风格待辨识')
         if language is None:reasons.append('语言待辨识')
