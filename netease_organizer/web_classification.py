@@ -47,6 +47,10 @@ class _Invalid(ValueError):
     pass
 
 
+class _GenerationIncomplete(_Invalid):
+    pass
+
+
 def _load_directory(project):
     # The workbench imports this mapper too, so defer its directory dependency.
     from .web_state import _load_directory as load
@@ -453,6 +457,16 @@ def _matches(row, filters, pilot_positions=()):
 
 def _build_projection(project):
     if generation_incomplete(project):
+        # Execution blocks on any marker uncertainty. A display diagnosis needs
+        # the exact bounded marker produced by our local export publisher.
+        marker = _load(project, PENDING_FILE, 4096)
+        if marker is not _MISSING:
+            value = marker[0]
+            if (set(value) == {'kind', 'version', 'mode'}
+                    and value['kind'] == 'classification_generation_pending'
+                    and type(value['version']) is int and value['version'] == 1
+                    and value['mode'] in ('build', 'repair_missing')):
+                raise _GenerationIncomplete()
         raise _Invalid()
     plan_record = _load(project, PLAN_FILE, MAX_PRIVATE_BYTES)
     report_record = _load(project, REPORT_FILE, MAX_REPORT_BYTES)
@@ -578,6 +592,16 @@ def build_local_classification(project, *, offset=0, limit=50, query='', dimensi
         if not cached and projection is not None:
             _remember_projection(cache_project, generation, projection)
         return result
+    except _GenerationIncomplete:
+        _forget_projection(cache_project)
+        try:
+            # The marker and all bounded source evidence must still be the same
+            # generation. A changed or unreadable recheck stays generic.
+            if generation == _cache_generation(cache_project):
+                fallback['error_code'] = 'classification_generation_incomplete'
+        except (OSError, ValueError, TypeError, KeyError, UnicodeError, RecursionError, ClassificationError):
+            pass
+        return fallback
     except (OSError, ValueError, TypeError, KeyError, UnicodeError, RecursionError, ClassificationError):
         if cache_project is not None:
             _forget_projection(cache_project)

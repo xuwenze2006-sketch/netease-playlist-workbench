@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ClassificationPanel } from './ClassificationPanel';
-import { fetchClassification, postClassificationDraft } from './api';
+import { ClassificationReadError, fetchClassification, postClassificationDraft } from './api';
 import type { ClassificationPage, ClassificationQuery } from './types';
 
 vi.mock('./api', async (original) => ({
@@ -36,6 +36,14 @@ function twoSongPage(revision = 0, draft: unknown = null): ClassificationPage {
   result.pagination.total = 2;
   result.summary!.source_count = result.summary!.covered_count = 2;
   return result;
+}
+
+function unavailablePage(request: ClassificationQuery, pending = false): ClassificationPage {
+  return { status: 'unavailable', source: 'local_record', verification: 'local_only',
+    updated_at: null, verified_at: null, summary: null,
+    options: { scene: [], style: [], language: [] }, playlists: [], records: [],
+    filters: request, pagination: { offset: request.offset, limit: 50, total: 0, next_offset: null },
+    ...(pending ? { error_code: 'classification_generation_incomplete' } : {}) } as ClassificationPage;
 }
 async function open(initial = page()) {
   vi.mocked(fetchClassification).mockImplementation(async (_session, request) => ({ ...initial, filters: request }));
@@ -72,6 +80,40 @@ beforeEach(() => {
 });
 
 describe('classification review and local corrections', () => {
+  it.each([true, false])('keeps unsaved text through an unavailable ordinary query and same-source recovery (pending=%s)', async (pending) => {
+    await open(); await edit();
+    fireEvent.change(editor().getByLabelText('修正理由'), { target: { value: '暂时不可读时也应保留的理由' } });
+    fireEvent.change(editor().getByLabelText('录音版本依据'), { target: { value: '尚未保存的专辑版本' } });
+    vi.mocked(fetchClassification).mockImplementationOnce(async (_session, request) => unavailablePage(request, pending));
+    fireEvent.change(screen.getByLabelText('复核筛选'), { target: { value: 'pilot' } });
+    const warning = await screen.findByRole('alert');
+    expect(warning.textContent).toContain('保留');
+    expect(screen.queryByText('资料版本或草稿状态已变化，旧的未保存编辑已清除，请重新核对。')).toBeNull();
+    expect(screen.getByText('来源曲目')).toBeTruthy();
+    expect(screen.queryByRole('link', { name: '查看恢复说明' }) !== null).toBe(pending);
+    fireEvent.click(screen.getByRole('button', { name: '重试读取分类成果' }));
+    await screen.findByRole('group', { name: '修正版本有疑问的歌' });
+    expect(editor().getByLabelText('修正理由')).toHaveProperty('value', '暂时不可读时也应保留的理由');
+    expect(editor().getByLabelText('录音版本依据')).toHaveProperty('value', '尚未保存的专辑版本');
+    expect(editor().getByLabelText('修正理由')).toHaveProperty('disabled', false);
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(vi.mocked(postClassificationDraft)).not.toHaveBeenCalled();
+  });
+
+  it('explains a cold pending generation with a separate help link and an explicit read retry', async () => {
+    vi.mocked(fetchClassification).mockResolvedValueOnce(unavailablePage(query, true));
+    await open();
+    expect(screen.getByRole('heading', { name: '分类文件尚未生成完整' })).toBeTruthy();
+    const help = screen.getByRole('link', { name: '查看恢复说明' });
+    expect(help.getAttribute('href')).toContain('docs/development.md');
+    expect(help.getAttribute('target')).toBe('_blank');
+    expect(help.getAttribute('rel')).toContain('noopener');
+    fireEvent.click(screen.getByRole('button', { name: '重试读取分类成果' }));
+    await screen.findByText('版本有疑问的歌');
+    expect(screen.queryByRole('link', { name: '查看恢复说明' })).toBeNull();
+    expect(vi.mocked(postClassificationDraft)).not.toHaveBeenCalled();
+  });
+
   async function navigateOriginalCard(kind: 'quality' | 'legacy' | 'review' = 'quality', detail = 0) {
     const source = page();
     if (kind === 'legacy') delete source.quality;
@@ -298,6 +340,37 @@ describe('classification review and local corrections', () => {
       if (accepted) settle({ accepted: true, message: '已保存', revision: 1, changed_count: 1 });
       else reject(new Error('模拟保存失败'));
     });
+    await waitFor(() => expect(vi.mocked(fetchClassification)).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(screen.getByRole('region', { name: '逐曲分类结果' }).getAttribute('aria-busy')).toBe('false'));
+    fireEvent.click(screen.getByRole('button', { name: '清除全部筛选' }));
+    const second = within(await screen.findByRole('group', { name: '修正另一首待核对的歌' }));
+    expect(second.getByLabelText('修正理由')).toHaveProperty('value', '第二首未保存依据');
+    if (!accepted) expect(editor().getByLabelText('修正理由')).toHaveProperty('value', '第一首核对依据');
+    expect(vi.mocked(postClassificationDraft)).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([true, false])('keeps other edits when an unavailable GET precedes a save acknowledgement (accepted=%s)', async (accepted) => {
+    await editBothSongs();
+    let accept!: (value: Awaited<ReturnType<typeof postClassificationDraft>>) => void;
+    let reject!: (error: Error) => void;
+    vi.mocked(postClassificationDraft).mockImplementation(() => new Promise((done, fail) => { accept = done; reject = fail; }));
+    vi.mocked(fetchClassification).mockRejectedValueOnce(new ClassificationReadError('generation_incomplete'));
+    const draft = { styles: ['流行抒情'], scenes: ['通勤散步'], language: '国语', reason: '第一首核对依据', recording_note: '' };
+    vi.mocked(fetchClassification).mockImplementation(async (_session, request) => ({
+      ...twoSongPage(accepted ? 1 : 0, accepted ? draft : null), filters: request,
+    }));
+    fireEvent.click(editor().getByRole('button', { name: '保存本地修正' }));
+    fireEvent.change(screen.getByLabelText('复核筛选'), { target: { value: 'conflict' } });
+    await screen.findByRole('link', { name: '查看恢复说明' });
+    expect(screen.queryByText('资料版本或草稿状态已变化，旧的未保存编辑已清除，请重新核对。')).toBeNull();
+    await act(async () => {
+      if (accepted) accept({ accepted: true, message: '已保存', revision: 1, changed_count: 1 });
+      else reject(new Error('模拟保存失败'));
+    });
+    if (!accepted) {
+      expect(vi.mocked(fetchClassification)).toHaveBeenCalledTimes(2);
+      fireEvent.click(screen.getByRole('button', { name: '重试读取分类成果' }));
+    }
     await waitFor(() => expect(vi.mocked(fetchClassification)).toHaveBeenCalledTimes(3));
     await waitFor(() => expect(screen.getByRole('region', { name: '逐曲分类结果' }).getAttribute('aria-busy')).toBe('false'));
     fireEvent.click(screen.getByRole('button', { name: '清除全部筛选' }));

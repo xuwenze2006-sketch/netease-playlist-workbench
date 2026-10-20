@@ -143,5 +143,7 @@ export function normalizeClassification(value: unknown, request: ClassificationQ
     verification: root.verification as ClassificationPage['verification'], updated_at: updated, verified_at: verified,
     summary, options: safeOptions, playlists, filters: { query: request.query, dimension: request.dimension,
       tag: request.tag, review: request.review, ...(filters.basis !== undefined || request.basis !== undefined ? { basis: basis as 'original' | 'draft' } : {}) }, pagination: { offset, limit, total, next_offset: expectedNext }, records,
+    ...(root.status === 'unavailable' && root.error_code === 'classification_generation_incomplete'
+      ? { error_code: 'classification_generation_incomplete' as const } : {}),
     ...(quality ? { quality } : {}) };
 }

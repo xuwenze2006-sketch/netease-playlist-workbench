@@ -24,6 +24,16 @@ export class LocalApiError extends Error {
   }
 }
 
+export class ClassificationReadError extends LocalApiError {
+  readonly reason: 'generation_incomplete' | 'unavailable';
+  constructor(reason: 'generation_incomplete' | 'unavailable' = 'unavailable') {
+    super(reason === 'generation_incomplete'
+      ? '本地分类资料尚未生成完整，请等待分类流程完成后重试。'
+      : '本地分类资料暂不可用，请重试或检查本地记录。');
+    this.reason = reason;
+  }
+}
+
 const REMOVED_PLAYLIST_MESSAGE = '该歌单已不在本地目录中，请更新页面后重试。';
 class RemovedLocalPlaylistError extends LocalApiError {
   constructor() {
@@ -98,6 +108,19 @@ async function requestJson<T>(
     }
     if (!response.ok) {
       if (
+        response.status === 503 &&
+        body === undefined &&
+        path.startsWith('/api/classification?') &&
+        value &&
+        typeof value === 'object' &&
+        !Array.isArray(value) &&
+        'accepted' in value &&
+        value.accepted === false &&
+        'error_code' in value &&
+        value.error_code === 'classification_generation_incomplete'
+      )
+        throw new ClassificationReadError('generation_incomplete');
+      if (
         response.status === 404 &&
         value &&
         typeof value === 'object' &&
@@ -143,11 +166,15 @@ export async function fetchClassification(
   const { offset, query, dimension, tag, review } = options;
   const path = `/api/classification?offset=${offset}&limit=50&q=${encodeURIComponent(query)}&dimension=${dimension}&tag=${encodeURIComponent(tag)}&review=${review}${options.basis === 'draft' ? '&basis=draft' : ''}${refreshLocalRecords ? '&refresh=local' : ''}`;
   const value = await requestJson(session, path, undefined, signal);
+  let page: ClassificationPage;
   try {
-    return normalizeClassification(value, options);
+    page = normalizeClassification(value, options);
   } catch {
     throw new LocalApiError('本地分类资料格式不完整，请重试或检查本地记录。');
   }
+  if (page.status === 'unavailable')
+    throw new ClassificationReadError(page.error_code === 'classification_generation_incomplete' ? 'generation_incomplete' : 'unavailable');
+  return page;
 }
 
 export async function fetchClassificationChanges(session: string, options: ClassificationChangesQuery, signal?: AbortSignal): Promise<ClassificationChangesPage> {

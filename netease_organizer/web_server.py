@@ -429,8 +429,13 @@ class WorkbenchApplication:
                 candidate = self._strict_local_data()
                 classification = build_local_classification(self.project, offset=offset, limit=limit, query=query,
                                                              dimension=dimension, tag=tag, review=review, basis=basis)
-                if (not isinstance(classification, dict) or classification.get('status') not in ('available', 'not_loaded')
-                        or signatures != self._local_record_signatures()):
+                if signatures != self._local_record_signatures():
+                    raise ValueError('local records changed or unavailable')
+                if (isinstance(classification, dict) and classification.get('status') == 'unavailable'
+                        and classification.get('error_code') == 'classification_generation_incomplete'):
+                    return 503, {'accepted': False, 'error_code': 'classification_generation_incomplete',
+                                 'message': '本地分类文件尚未生成完成，请先完成分类工具的本地导出后重新读取；原页面资料已保留。'}
+                if not isinstance(classification, dict) or classification.get('status') not in ('available', 'not_loaded'):
                     raise ValueError('local records changed or unavailable')
                 with self.lock:
                     if generation != self.session:

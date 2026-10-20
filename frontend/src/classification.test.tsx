@@ -352,7 +352,7 @@ describe('local classification results', () => {
       });
       expect(
         screen.getByRole('heading', {
-          name: status === 'not_loaded' ? '还没有本地分类成果' : '本地分类记录不可用',
+          name: status === 'not_loaded' ? '还没有本地分类成果' : '分类成果暂时无法读取',
         }),
       ).toBeTruthy();
       await click('重试读取分类成果');

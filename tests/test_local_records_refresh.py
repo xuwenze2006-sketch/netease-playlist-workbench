@@ -83,6 +83,74 @@ class LocalRecordsRefreshTests(unittest.TestCase):
         self.assertEqual(response['verification'], 'verified')
         self.assertEqual(self.controller.calls, [('doctor', {})])
 
+    def test_valid_pending_diagnostic_preserves_get_status_refresh_cache_and_unknown_write_freeze(self):
+        self.records.complete_evidence()
+        self.assertEqual(self.get()[0], 200)
+        self.app.job = {'id': 'old-job', 'action': 'rename', 'status': 'uncertain',
+                        'result': {'status': 'uncertain', 'write_attempted': True, 'outcome_known': False}}
+        self.app._review_required = True
+        self.app._review_reasons = {'renames'}
+        self.app.recovery = {'status': 'review_required', 'operation': 'renames', 'can_reconcile': True}
+        before = self.app.state()
+        self.records.write('分类生成未完成.json', {
+            'kind': 'classification_generation_pending', 'version': 1, 'mode': 'build'}, 110)
+        status, response = self.get('/api/classification')
+        self.assertEqual(status, 200)
+        self.assertEqual(response['status'], 'unavailable')
+        self.assertEqual(response.get('error_code'), 'classification_generation_incomplete')
+        self.assertEqual(response['records'], [])
+        self.assertEqual(self.app.state(), before)
+        status, response = self.get()
+        self.assertEqual(status, 503)
+        self.assertFalse(response['accepted'])
+        self.assertEqual(response.get('error_code'), 'classification_generation_incomplete')
+        self.assertIn('生成', response['message'])
+        self.assertEqual(set(response), {'accepted', 'error_code', 'message'})
+        self.assertEqual(self.app.state(), before)
+        self.assertTrue(self.app._review_required)
+        self.assertEqual(self.app._review_reasons, {'renames'})
+        self.assertEqual(self.controller.calls, [('doctor', {})])
+        self.assertEqual(self.controller.prepared, [])
+
+    def test_pending_diagnostic_does_not_mask_private_provider_failure_or_mid_refresh_changes(self):
+        self.records.write('分类生成未完成.json', {
+            'kind': 'classification_generation_pending', 'version': 1, 'mode': 'build'}, 110)
+        before = self.app.state()
+
+        def denied_provider():
+            raise PermissionError('PRIVATE-provider')
+
+        self.app.state_provider = denied_provider
+        status, response = self.get()
+        self.assertEqual(status, 503)
+        self.assertNotIn('error_code', response)
+        self.assertNotIn('PRIVATE', json.dumps(response))
+        self.assertEqual(self.app.state(), before)
+        self.app.state_provider = self.provider
+        from netease_organizer.web_server import build_local_classification as read
+
+        def changed_after_read(project, **kwargs):
+            result = read(project, **kwargs)
+            (self.project / 'artifacts/分类生成未完成.json').unlink()
+            return result
+
+        with patch('netease_organizer.web_server.build_local_classification', side_effect=changed_after_read):
+            status, response = self.get()
+        self.assertEqual(status, 503)
+        self.assertNotIn('error_code', response)
+        self.assertEqual(self.app.state(), before)
+
+    def test_invalid_pending_schema_http_refresh_remains_generic_and_preserves_cache(self):
+        before = self.app.state()
+        self.records.write('分类生成未完成.json', {
+            'kind': 'classification_generation_pending', 'version': True, 'mode': 'build',
+            'private': 'PRIVATE-MARKER'}, 110)
+        status, response = self.get()
+        self.assertEqual(status, 503)
+        self.assertNotIn('error_code', response)
+        self.assertNotIn('PRIVATE', json.dumps(response))
+        self.assertEqual(self.app.state(), before)
+
     def test_pending_appearing_during_http_refresh_cannot_publish_new_state(self):
         before = self.app.state()
         marker = self.project / 'artifacts/分类生成未完成.json'

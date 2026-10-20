@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type { KeyboardEvent, MouseEvent } from 'react';
-import { fetchClassification, postClassificationDraft, readSession } from './api';
+import { ClassificationReadError, fetchClassification, postClassificationDraft, readSession } from './api';
 import { ClassificationEditor, ClassificationQualitySummary } from './ClassificationEditor';
 import type { ClassificationEditSession } from './ClassificationEditor';
 import { LANGUAGE_LABELS, REVIEW_LABELS, SCENE_LABELS, STYLE_LABELS } from './classificationQuality';
@@ -31,6 +31,7 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
   );
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
+  const [readFailure, setReadFailure] = useState<ClassificationReadError['reason'] | null>(null);
   const [retry, setRetry] = useState(0);
   const [pageNotice, setPageNotice] = useState('');
   const [draftFailure, setDraftFailure] = useState('');
@@ -94,6 +95,7 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
     let disposed = false;
     setLoading(true);
     setFailed(false);
+    setReadFailure(null);
     void (async () => {
       try {
         const result = await fetchClassification(
@@ -108,6 +110,10 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
         if (mutationLock.current) {
           postponedRead.current = true;
           return;
+        }
+        if (result.status === 'unavailable') {
+          throw new ClassificationReadError(result.error_code === 'classification_generation_incomplete'
+            ? 'generation_incomplete' : 'unavailable');
         }
         if (
           result.status === 'available' &&
@@ -133,10 +139,11 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
           editGeneration.current = identity;
         }
         setSaved({ page: result, selection });
-      } catch {
+      } catch (error) {
         if (!disposed && current === generation.current) {
           pageIntent.current = null;
           setFailed(true);
+          setReadFailure(error instanceof ClassificationReadError ? error.reason : 'unavailable');
         }
       } finally {
         if (!disposed && current === generation.current) setLoading(false);
@@ -382,6 +389,11 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
     </button>
   );
   const unavailable = !waiting && !failed && !available;
+  const generationIncomplete = failed && readFailure === 'generation_incomplete';
+  const recoveryHelp = <a
+    href="https://github.com/xuwenze2006-sketch/netease-playlist-workbench/blob/main/docs/development.md#分类文件生成中断后的恢复"
+    target="_blank" rel="noopener noreferrer"
+  >查看恢复说明</a>;
 
   return (
     <div ref={panel} className="classification-panel" hidden={!active}>
@@ -480,8 +492,10 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
       </p>}
       {failed && data?.status === 'available' && (
         <div className="classification-stale" role="alert">
-          <strong>重新读取未完成，当前保留上次读取的旧记录。</strong>
-          <p>记录保存于 {dateText(data.updated_at)}。本机服务可能正在忙，请稍后重试。</p>
+          <strong>{generationIncomplete ? '分类文件尚未生成完整，当前保留上次读取的旧记录。'
+            : '重新读取未完成，当前保留上次读取的旧记录。'}</strong>
+          <p>记录保存于 {dateText(data.updated_at)}。未保存的编辑已保留，成功重读前暂不可保存。</p>
+          {generationIncomplete && <p>请等待分类流程完成后重试；如果流程已退出，可{recoveryHelp}。</p>}
           {retryButton}
         </div>
       )}
@@ -606,8 +620,12 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
               className="classification-empty"
               role={data?.status === 'available' ? undefined : 'alert'}
             >
-              <h3>分类成果暂时无法读取</h3>
-              <p>请检查本机服务后重试。读取分类记录不会修改账号。</p>
+              <h3>{data?.status === 'available' ? '当前筛选尚未读取成功'
+                : generationIncomplete ? '分类文件尚未生成完整' : '分类成果暂时无法读取'}</h3>
+              <p>{data?.status === 'available' ? '请在上方重试；旧记录和未保存的编辑已保留。'
+                : generationIncomplete ? '请等待分类流程完成后重试；如果流程已退出，请先检查生成记录。'
+                : '请检查本机服务或本地记录后重试。读取分类记录不会修改账号。'}</p>
+              {generationIncomplete && data?.status !== 'available' && <p>{recoveryHelp}</p>}
               {data?.status !== 'available' && retryButton}
             </div>
           ) : unavailable ? (

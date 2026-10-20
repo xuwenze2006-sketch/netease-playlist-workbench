@@ -98,6 +98,105 @@ class ClassificationCacheTests(unittest.TestCase):
         self.assertEqual({name: (self.fixture.project / 'artifacts' / name).read_bytes()
                           for name in sources}, sources)
 
+    def test_valid_pending_marker_explains_unavailable_without_retaining_source_or_cache(self):
+        for mode in ('build', 'repair_missing'):
+            for warm in (False, True):
+                with self.subTest(mode=mode, warm=warm):
+                    fixture = self.make_fixture()
+                    if warm:
+                        self.assertEqual(fixture.view()['verification'], 'verified')
+                    marker = fixture.write(PENDING, {
+                        'kind': 'classification_generation_pending', 'version': 1, 'mode': mode}, 110)
+                    if not warm:
+                        marker.write_bytes(marker.read_bytes().ljust(4096, b' '))
+                    result = fixture.view()
+                    self.assertEqual(result['status'], 'unavailable')
+                    self.assertEqual(result.get('error_code'), 'classification_generation_incomplete')
+                    self.assertEqual(result['records'], [])
+                    self.assertIsNone(result['verified_at'])
+                    self.assertNotIn('quality', result)
+                    self.assertNotIn('mode', result)
+                    self.assertNotIn(fixture.project, display._PROJECTION_CACHE)
+                    marker.unlink()
+                    self.assertEqual(fixture.view()['verification'], 'verified')
+                    self.assertNotIn('error_code', fixture.view())
+
+    def test_pending_diagnostic_requires_exact_bounded_production_schema(self):
+        marker = self.fixture.project / 'artifacts' / PENDING
+        valid = {'kind': 'classification_generation_pending', 'version': 1, 'mode': 'build'}
+        malformed = [b'{broken', b'[]', b'null', b'{}', b'{"status":"pending"}',
+                     json.dumps({**valid, 'kind': 'unknown'}).encode(),
+                     json.dumps({**valid, 'version': True}).encode(),
+                     json.dumps({**valid, 'version': 1.0}).encode(),
+                     json.dumps({**valid, 'version': 2}).encode(),
+                     json.dumps({**valid, 'mode': 'unknown'}).encode(),
+                     json.dumps({**valid, 'mode': []}).encode(),
+                     json.dumps({**valid, 'private': 'PRIVATE-MARKER'}).encode(),
+                     b'{"kind":"classification_generation_pending","version":1,"version":1,"mode":"build"}',
+                     json.dumps(valid).encode().ljust(4097, b' ')]
+        for raw in malformed:
+            with self.subTest(raw=raw[:120]):
+                self.assertEqual(self.fixture.view()['verification'], 'verified')
+                marker.write_bytes(raw)
+                try:
+                    result = self.fixture.view()
+                    self.assertEqual(result['status'], 'unavailable')
+                    self.assertNotIn('error_code', result)
+                    self.assertNotIn('PRIVATE-MARKER', json.dumps(result))
+                    self.assertNotIn(self.fixture.project, display._PROJECTION_CACHE)
+                finally:
+                    marker.unlink()
+
+    def test_unrelated_corruption_has_no_pending_generation_diagnostic(self):
+        self.assertEqual(self.fixture.view()['verification'], 'verified')
+        (self.fixture.project / 'artifacts' / REPORT).write_bytes(b'{PRIVATE-CORRUPTION')
+        result = self.fixture.view()
+        self.assertEqual(result['status'], 'unavailable')
+        self.assertNotIn('error_code', result)
+        self.assertNotIn('PRIVATE', json.dumps(result))
+
+    def test_pending_marker_changed_after_diagnostic_read_stays_generic(self):
+        for removed in (False, True):
+            with self.subTest(removed=removed):
+                fixture = self.make_fixture()
+                marker = fixture.write(PENDING, {
+                    'kind': 'classification_generation_pending', 'version': 1, 'mode': 'build'}, 110)
+                load = display._load
+
+                def change_marker(project, name, maximum):
+                    result = load(project, name, maximum)
+                    if name == PENDING:
+                        if removed:
+                            marker.unlink()
+                        else:
+                            marker.write_text('{PRIVATE-CHANGED}', encoding='utf-8')
+                    return result
+
+                with patch.object(display, '_load', side_effect=change_marker):
+                    result = fixture.view()
+                self.assertEqual(result['status'], 'unavailable')
+                self.assertNotIn('error_code', result)
+                self.assertNotIn(fixture.project, display._PROJECTION_CACHE)
+
+    def test_pending_generation_recheck_failure_stays_generic(self):
+        self.fixture.write(PENDING, {
+            'kind': 'classification_generation_pending', 'version': 1, 'mode': 'build'}, 110)
+        cache_generation = display._cache_generation
+        first = True
+
+        def denied_recheck(project):
+            nonlocal first
+            if not first:
+                raise PermissionError('PRIVATE-generation-recheck')
+            first = False
+            return cache_generation(project)
+
+        with patch.object(display, '_cache_generation', side_effect=denied_recheck):
+            result = self.fixture.view()
+        self.assertEqual(result['status'], 'unavailable')
+        self.assertNotIn('error_code', result)
+        self.assertNotIn('PRIVATE', json.dumps(result))
+
     def test_pending_marker_created_mid_projection_discards_result(self):
         load_directory = display._load_directory
 
@@ -110,6 +209,7 @@ class ClassificationCacheTests(unittest.TestCase):
         self.assertEqual(result['status'], 'unavailable')
         self.assertEqual(result['records'], [])
         self.assertIsNone(result['verified_at'])
+        self.assertNotIn('error_code', result)
         self.assertNotIn(self.fixture.project, display._PROJECTION_CACHE)
 
     def test_pending_marker_created_while_cached_filtering_discards_and_evicts(self):
@@ -129,6 +229,7 @@ class ClassificationCacheTests(unittest.TestCase):
         self.assertEqual(result['status'], 'unavailable')
         self.assertEqual(result['records'], [])
         self.assertIsNone(result['verified_at'])
+        self.assertNotIn('error_code', result)
         self.assertNotIn(self.fixture.project, display._PROJECTION_CACHE)
 
     def test_pending_marker_removed_mid_projection_discards_result(self):
@@ -160,6 +261,7 @@ class ClassificationCacheTests(unittest.TestCase):
                     result = self.fixture.view()
                     self.assertEqual(result['status'], 'unavailable')
                     self.assertEqual(result['records'], [])
+                    self.assertNotIn('error_code', result)
                     self.assertNotIn(self.fixture.project, display._PROJECTION_CACHE)
                 finally:
                     marker.rmdir() if kind == 'directory' else marker.unlink()
@@ -178,6 +280,7 @@ class ClassificationCacheTests(unittest.TestCase):
                     result = self.fixture.view()
                     self.assertEqual(result['status'], 'unavailable')
                     self.assertEqual(result['records'], [])
+                    self.assertNotIn('error_code', result)
                     self.assertNotIn(self.fixture.project, display._PROJECTION_CACHE)
                 finally:
                     marker.unlink()
@@ -195,6 +298,7 @@ class ClassificationCacheTests(unittest.TestCase):
             result = self.fixture.view()
         self.assertEqual(result['status'], 'unavailable')
         self.assertEqual(result['records'], [])
+        self.assertNotIn('error_code', result)
         self.assertNotIn(self.fixture.project, display._PROJECTION_CACHE)
 
     def test_atomic_same_size_and_mtime_report_replacement_cannot_reuse_old_rows(self):

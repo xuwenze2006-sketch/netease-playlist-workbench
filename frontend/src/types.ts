@@ -221,6 +221,7 @@ export interface ClassificationChangesPage {
 }
 export interface ClassificationPage {
   status: 'available' | 'not_loaded' | 'unavailable';
+  error_code?: 'classification_generation_incomplete';
   source: 'local_record';
   verification: 'verified' | 'local_only';
   updated_at: string | null;
