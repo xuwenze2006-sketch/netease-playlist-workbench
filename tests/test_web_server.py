@@ -340,6 +340,67 @@ class WebServerTests(unittest.TestCase):
                 self.assertIn(status, (400, 403, 404))
                 self.assertNotIn(SECRET, body.decode())
 
+    def test_unverifiable_track_directory_is_unavailable_instead_of_removed_and_can_recover(self):
+        from unittest.mock import patch
+        from test_playlist_details import record
+        from test_web_preview import snapshot
+
+        artifacts = self.project / 'artifacts'
+        folder = artifacts / '歌单明细'
+        folder.mkdir(parents=True)
+        source = artifacts / '在线整理快照.json'
+        source.write_text(json.dumps(snapshot(), ensure_ascii=False), encoding='utf-8')
+        detail = record()
+        detail['account'].update(id='A' * 32, original_id='12345678')
+        detail['playlist'].update(id='B' * 32, original_id='34567890', creator_id='A' * 32)
+        saved = folder / '34567890.json'
+        saved.write_text(json.dumps(detail, ensure_ascii=False), encoding='utf-8')
+        source_bytes, detail_bytes = source.read_bytes(), saved.read_bytes()
+        target = '/api/playlists/34567890/tracks'
+        status, _, body = self.request('GET', target)
+        self.assertEqual(status, 200)
+        self.assertEqual(len(json.loads(body)['tracks']), 2)
+        original_open = Path.open
+
+        def unreadable(path, *args, **kwargs):
+            if path == source:
+                raise PermissionError('temporary fixture read failure')
+            return original_open(path, *args, **kwargs)
+
+        try:
+            for failure in ('bad_json', 'unreadable', 'missing'):
+                with self.subTest(failure=failure):
+                    source.write_bytes(source_bytes)
+                    if failure == 'bad_json':
+                        source.write_bytes(b'{broken')
+                    elif failure == 'missing':
+                        source.unlink()
+                    if failure == 'unreadable':
+                        with patch.object(Path, 'open', unreadable):
+                            status, _, body = self.request('GET', target)
+                    else:
+                        status, _, body = self.request('GET', target)
+                    self.assertEqual(status, 200)
+                    data = json.loads(body)
+                    self.assertEqual(data['status'], 'unavailable')
+                    self.assertIsNone(data['playlist'])
+                    self.assertIsNone(data['counts']['observed'])
+                    self.assertEqual(data['tracks'], [])
+                    self.assertEqual(saved.read_bytes(), detail_bytes)
+        finally:
+            source.write_bytes(source_bytes)
+        status, _, body = self.request('GET', target)
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)['status'], 'available')
+        self.assertEqual(len(json.loads(body)['tracks']), 2)
+        # A valid directory can establish that a different key is absent.
+        status, _, body = self.request('GET', '/api/playlists/99999/tracks')
+        self.assertEqual(status, 404)
+        self.assertEqual(json.loads(body)['message'], '该歌单已不在本地目录中，请更新页面后重试。')
+        self.assertEqual(saved.read_bytes(), detail_bytes)
+        self.assertEqual(source.read_bytes(), source_bytes)
+        self.assertEqual(self.controller.calls, [('doctor', {})])
+
     def test_malformed_oversized_or_unknown_payloads_make_no_controller_calls(self):
         for body in (b"[]", b"{", b'\xff', b'{"action":"rename","action":"login"}',
                      b'{"action":"rename","payload":{"count":NaN}}', b"x" * 65537,

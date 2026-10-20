@@ -65,7 +65,9 @@ def build_local_tracks(project, key, *, offset=0, limit=50, query='', metadata='
               'tracks': []}
     if before != _source_signatures(project, key):
         return _unavailable(result)
-    if row is None or directory is None:
+    if directory is None:
+        return _unavailable(result)
+    if row is None:
         return result
     result['status'] = 'not_loaded'
     try:

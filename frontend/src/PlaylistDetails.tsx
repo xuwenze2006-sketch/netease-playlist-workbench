@@ -118,11 +118,28 @@ function DetailsDrawer({
       const intent = paginationFocus.current;
       if (intent && event.target !== intent.source) paginationFocus.current = null;
     };
+    const cancelFocusOnPointer = (event: Event) => {
+      const intent = paginationFocus.current;
+      if (intent && !intent.source.contains(event.target as Node)) paginationFocus.current = null;
+    };
+    const cancelFocusOnScroll = () => { paginationFocus.current = null; };
+    const cancelFocusOnScrollKey = (event: globalThis.KeyboardEvent) => {
+      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'Home', 'End', ' ', 'Spacebar'].includes(event.key))
+        paginationFocus.current = null;
+    };
     document.addEventListener('focusin', cancelFocusOnMove);
+    document.addEventListener('pointerdown', cancelFocusOnPointer);
+    document.addEventListener('touchstart', cancelFocusOnScroll, { passive: true });
+    document.addEventListener('wheel', cancelFocusOnScroll, { passive: true });
+    document.addEventListener('keydown', cancelFocusOnScrollKey);
     return () => {
       closed.current = true;
       paginationFocus.current = null;
       document.removeEventListener('focusin', cancelFocusOnMove);
+      document.removeEventListener('pointerdown', cancelFocusOnPointer);
+      document.removeEventListener('touchstart', cancelFocusOnScroll);
+      document.removeEventListener('wheel', cancelFocusOnScroll);
+      document.removeEventListener('keydown', cancelFocusOnScrollKey);
       request.current?.abort();
       if (element?.open) element.close();
       restoreFocus();

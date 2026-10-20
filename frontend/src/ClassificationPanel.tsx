@@ -32,10 +32,13 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
   const [failed, setFailed] = useState(false);
   const [retry, setRetry] = useState(0);
   const [pageNotice, setPageNotice] = useState('');
+  const [draftFailure, setDraftFailure] = useState('');
   const [draftSubmitting, setDraftSubmitting] = useState(false);
   const mutationLock = useRef(false);
+  const postponedRead = useRef(false);
   const editSessions = useRef(new Map<string, ClassificationEditSession>());
   const editGeneration = useRef('');
+  const editReset = useRef(0);
   const generation = useRef(0);
   const refreshRequested = useRef(false);
   const resultsHeading = useRef<HTMLHeadingElement>(null);
@@ -98,6 +101,12 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
           refresh,
         );
         if (disposed || current !== generation.current) return;
+        // A read may already see this write before its POST acknowledgement.
+        // Keep the editing basis stable until that acknowledgement is known.
+        if (mutationLock.current) {
+          postponedRead.current = true;
+          return;
+        }
         if (
           result.status === 'available' &&
           selection.offset > 0 &&
@@ -115,6 +124,7 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
         if (identity !== editGeneration.current || result.quality?.draft_status !== 'ready') {
           if (editSessions.current.size) setPageNotice('资料版本或草稿状态已变化，旧的未保存编辑已清除，请重新核对。');
           editSessions.current.clear();
+          editReset.current += 1;
           editGeneration.current = identity;
         }
         setSaved({ page: result, selection });
@@ -256,6 +266,8 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
     if (mutationLock.current || !active || waiting || failed || currentData?.quality?.draft_status !== 'ready')
       throw new Error('分类记录正在更新，请重新读取后保存修正。');
     mutationLock.current = true;
+    postponedRead.current = false;
+    setDraftFailure('');
     setDraftSubmitting(true);
     const source = document.activeElement;
     saveIntent.current = source instanceof HTMLElement &&
@@ -264,6 +276,17 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
     try {
       const result = await postClassificationDraft(readSession(), request);
       if (saveIntent.current) saveIntent.current.revision = result.revision;
+      const previous = `${request.source_version}:${request.revision}`;
+      if (result.revision === request.revision + 1 && editGeneration.current === previous) {
+        const next = `${request.source_version}:${result.revision}`;
+        const sessions = new Map<string, ClassificationEditSession>();
+        for (const [identity, session] of editSessions.current) {
+          if (identity.startsWith(`${previous}:`) && identity !== `${previous}:${request.record_key}`)
+            sessions.set(`${next}:${identity.slice(previous.length + 1)}`, session);
+        }
+        editSessions.current = sessions;
+        editGeneration.current = next;
+      }
       // A GET started while this POST was pending may contain an older draft.
       // Invalidate it before requesting the accepted revision from local records.
       generation.current += 1;
@@ -272,6 +295,11 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
       refresh();
     } catch (error) {
       saveIntent.current = null;
+      if (postponedRead.current) {
+        generation.current += 1;
+        setLoading(true);
+        refresh();
+      }
       throw error;
     } finally {
       mutationLock.current = false;
@@ -436,6 +464,7 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
           {pageNotice}
         </p>
       )}
+      {draftFailure && <p className="classification-editor-error" role="alert">{draftFailure}</p>}
       <div
         id={`${id}-songs`}
         role="tabpanel"
@@ -580,7 +609,7 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
                         : track.pending_reasons.length > 0;
                       return (
                       <article className="classification-track" data-record-key={track.record_key} key={currentData.quality
-                        ? `${editIdentity}:${currentData.quality.draft_status}`
+                        ? `${editReset.current}:${editIdentity}:${currentData.quality.draft_status}`
                         : track.position}>
                         <span className="classification-position">{track.position}</span>
                         <div className="classification-track-content">
@@ -625,7 +654,7 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
                               if (session && editIdentity.startsWith(`${editGeneration.current}:`)) editSessions.current.set(editIdentity, session);
                               else editSessions.current.delete(editIdentity);
                             }}
-                            onSubmit={submitDraft} />}
+                            onSubmit={submitDraft} onSubmissionError={setDraftFailure} />}
                         </div>
                       </article>
                     ); })}

@@ -8,6 +8,7 @@ type Props = {
   quality: ClassificationQuality;
   disabled: boolean;
   onSubmit: (request: ClassificationDraftRequest) => Promise<void>;
+  onSubmissionError?: (message: string) => void;
   session?: ClassificationEditSession;
   onSessionChange?: (session: ClassificationEditSession | null) => void;
 };
@@ -18,7 +19,7 @@ function initialValue(track: ClassificationRecord): ClassificationCorrection {
 }
 function labels(value: string[]) { return value.length ? value.join('、') : '未指定'; }
 
-export function ClassificationEditor({ track, quality, disabled, onSubmit, session, onSessionChange }: Props) {
+export function ClassificationEditor({ track, quality, disabled, onSubmit, onSubmissionError, session, onSessionChange }: Props) {
   const [editing, setEditing] = useState(session?.editing ?? false);
   const [value, setValue] = useState(() => session?.value ?? initialValue(track));
   const [submitting, setSubmitting] = useState(false);
@@ -68,7 +69,9 @@ export function ClassificationEditor({ track, quality, disabled, onSubmit, sessi
       onSessionChange?.(null);
       setEditing(false);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '本地修正未保存，请刷新记录后核对。');
+      const message = cause instanceof Error ? cause.message : '本地修正未保存，请刷新记录后核对。';
+      if (onSubmissionError) onSubmissionError(message);
+      else setError(message);
     } finally { setSubmitting(false); }
   }
 
@@ -169,7 +172,7 @@ export function ClassificationQualitySummary({ quality, onReview, disabled = fal
         <button className="classification-inline" disabled={!quality.changed_count} onClick={() => onReview('draft')}>查看本地修正</button>
       </div>
       <p>草稿尚未写入网易云歌单；下方对照展示现有分类与本地修正。</p>
-      <p>未保存的输入仅保留在当前窗口，可收起或筛选后返回继续编辑。请逐首保存；保存任意修正、资料版本变化、关闭窗口或重新载入会清除其他未保存编辑。</p>
+      <p>未保存的输入仅保留在当前窗口，可收起或筛选后返回继续编辑。本窗口保存或撤销一首歌的修正后，其他编辑会继续保留；外部资料或草稿变化、关闭窗口或重新载入会清除未保存编辑。</p>
       {quality.draft_status === 'stale' && <p className="classification-editor-error" role="status">来源记录已变化，已有草稿需要重新核对，暂时无法保存修正。</p>}
       {quality.draft_status === 'unavailable' && <p className="classification-editor-error" role="status">本地修正草稿暂不可用，请检查记录后重新读取。</p>}
       {quality.playlist_changes.length > 0 && (

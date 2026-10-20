@@ -16,7 +16,7 @@ const playlists = [
   { key: '9004', name: 'Ｆｕｎｋ现场', track_count: 2, category: 'normal', source: 'local_record' },
 ];
 
-async function openPlaylists() {
+async function openPlaylists(records = playlists) {
   document.head.innerHTML = '<meta name="organizer-session" content="search-test-session" />';
   const fetcher = vi.fn(async (url: string, _init?: RequestInit) => {
     if (url !== '/api/state') throw new Error('Unexpected local request');
@@ -29,7 +29,7 @@ async function openPlaylists() {
         data: {
           account: { nickname: '本地搜索验收用户' },
           source: 'local_record',
-          playlists,
+          playlists: records,
           history: null,
           artists_completed: false,
         },
@@ -75,6 +75,19 @@ describe('local playlist name search', () => {
       target: { value: query },
     });
     expect(visibleNames()).toEqual(expected);
+    expectOnlyLocalStateReads(fetcher);
+  });
+
+  it.each(['Σ', 'ς', 'σ'])('finds a final sigma in the original title when searching %s', async (query) => {
+    const fetcher = await openPlaylists([
+      ...playlists,
+      { key: '9005', name: 'ΟΣ', track_count: 1, category: 'normal', source: 'local_record' },
+    ]);
+    fireEvent.change(screen.getByRole('textbox', { name: '搜索歌单名称' }), {
+      target: { value: query },
+    });
+    expect(visibleNames()).toEqual(['ΟΣ']);
+    expect(screen.getByRole('heading', { name: 'ΟΣ' }).getAttribute('title')).toBe('ΟΣ');
     expectOnlyLocalStateReads(fetcher);
   });
 

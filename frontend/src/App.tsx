@@ -462,11 +462,12 @@ export default function App() {
   const sessionError = [connectionError, error].find((message) =>
     message.startsWith('页面会话已更新'),
   );
-  const queryKey = query.normalize('NFKC').trim().toLocaleLowerCase();
+  // Final sigma must share sigma's search form regardless of its word position.
+  const queryKey = query.normalize('NFKC').trim().toLocaleLowerCase().replace(/ς/g, 'σ');
   const filtered = playlists.filter(
     (playlist) =>
       (category === 'all' || playlist.category === category) &&
-      playlist.name.normalize('NFKC').toLocaleLowerCase().includes(queryKey),
+      playlist.name.normalize('NFKC').toLocaleLowerCase().replace(/ς/g, 'σ').includes(queryKey),
   );
 
   useEffect(() => {

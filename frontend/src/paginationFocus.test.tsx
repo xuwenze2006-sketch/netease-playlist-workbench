@@ -80,6 +80,13 @@ function focusedClick(name: string) {
   button.focus();
   fireEvent.click(button);
 }
+function moveWhileWaiting(movement: string) {
+  const content = document.querySelector('.details-body')!;
+  if (movement === 'wheel') fireEvent.wheel(content, { deltaY: 120 });
+  else if (movement === 'pointer') fireEvent.pointerDown(content);
+  else if (movement === 'touch') fireEvent.touchStart(content);
+  else fireEvent.keyDown(document.activeElement!, { key: movement });
+}
 beforeEach(() => {
   let meta = document.querySelector<HTMLMetaElement>('meta[name="organizer-session"]');
   if (!meta) {
@@ -303,6 +310,64 @@ describe('keyboard focus after asynchronous local pagination', () => {
       next.resolve(response(page('9000', 50)));
     });
     expect(document.activeElement).toBe(document.body);
+  });
+  it.each(
+    ['wheel', 'pointer', 'touch', 'PageDown'].flatMap((movement) =>
+      ['page success', 'page failure', 'retry success'].map((phase) => ({ movement, phase })),
+    ),
+  )('cancels late $phase focus after $movement without a focus move', async ({ movement, phase }) => {
+    const pageRead = deferred<ReturnType<typeof response>>();
+    const retryRead = deferred<ReturnType<typeof response>>();
+    let attempts = 0;
+    const fetcher = vi.fn((url: string, _init: RequestInit) => {
+      const offset = Number(new URL(url, 'http://localhost').searchParams.get('offset'));
+      if (offset === 50) return ++attempts === 1 ? pageRead.promise : retryRead.promise;
+      return Promise.resolve(response(page()));
+    });
+    vi.stubGlobal('fetch', fetcher);
+    render(<PlaylistDetails playlist={playlist} onClose={() => {}} />);
+    await screen.findByRole('table');
+    focusedClick('下一页');
+    if (phase === 'retry success') {
+      await act(async () => pageRead.reject(new Error('local read failed')));
+      expect(document.activeElement).toBe(screen.getByRole('button', { name: '重试读取' }));
+      focusedClick('重试读取');
+    }
+    const beforeMovement = document.activeElement;
+    moveWhileWaiting(movement);
+    const afterMovement = document.activeElement;
+    expect(afterMovement).toBe(beforeMovement);
+    await act(async () => {
+      if (phase === 'page failure') pageRead.reject(new Error('local read failed'));
+      else (phase === 'retry success' ? retryRead : pageRead).resolve(response(page('9000', 50)));
+    });
+    expect(document.activeElement).toBe(afterMovement);
+    if (phase === 'page failure') expect(screen.getByRole('alert')).toBeTruthy();
+    else expect(screen.getByText('第 2 页，共 3 页')).toBeTruthy();
+    expect(fetcher).toHaveBeenCalledTimes(phase === 'retry success' ? 3 : 2);
+    expect(fetcher.mock.calls.every(([, init]) => init.method === 'GET')).toBe(true);
+  });
+  it.each(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'Home', 'End', ' ', 'Spacebar'])(
+    'cancels a delayed page focus after the %j scrolling key', async (key) => {
+      const { next } = setup();
+      render(<PlaylistDetails playlist={playlist} onClose={() => {}} />);
+      await screen.findByRole('table');
+      focusedClick('下一页');
+      moveWhileWaiting(key);
+      const afterMovement = document.activeElement;
+      await act(async () => next.resolve(response(page('9000', 50))));
+      expect(document.activeElement).toBe(afterMovement);
+      expect(screen.getByText('第 2 页，共 3 页')).toBeTruthy();
+    },
+  );
+  it('keeps normal page focus recovery after a key that does not scroll', async () => {
+    const { next } = setup();
+    render(<PlaylistDetails playlist={playlist} onClose={() => {}} />);
+    await screen.findByRole('table');
+    focusedClick('下一页');
+    fireEvent.keyDown(document.activeElement!, { key: 'Shift' });
+    await act(async () => next.resolve(response(page('9000', 50))));
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: '下一页' }));
   });
   it('remembers a focus move outside the dialog even if that control later blurs', async () => {
     const { next } = setup();

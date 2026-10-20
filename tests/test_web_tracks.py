@@ -76,6 +76,46 @@ class LocalTracksTests(unittest.TestCase):
         self.assertEqual(result['status'], 'unavailable')
         self.assertEqual(result['tracks'], [])
 
+    def test_unverifiable_directory_is_unavailable_and_preserves_saved_details(self):
+        source = self.write('在线整理快照.json', snapshot())
+        self.save_detail()
+        details = self.project / 'artifacts/歌单明细/34567890.json'
+        saved_source, saved_details = source.read_bytes(), details.read_bytes()
+        self.assertEqual(self.read('34567890')['status'], 'available')
+        original_open = Path.open
+
+        def unreadable(path, *args, **kwargs):
+            if path == source:
+                raise PermissionError('temporary fixture read failure')
+            return original_open(path, *args, **kwargs)
+
+        try:
+            for failure in ('bad_json', 'unreadable', 'missing'):
+                with self.subTest(failure=failure):
+                    source.write_bytes(saved_source)
+                    if failure == 'bad_json':
+                        source.write_bytes(b'{broken')
+                    elif failure == 'missing':
+                        source.unlink()
+                    if failure == 'unreadable':
+                        with patch.object(Path, 'open', unreadable):
+                            result = self.read('34567890')
+                    else:
+                        result = self.read('34567890')
+                    self.assertEqual(result['status'], 'unavailable')
+                    self.assertIsNone(result['playlist'])
+                    self.assertIsNone(result['counts']['expected'])
+                    self.assertIsNone(result['counts']['observed'])
+                    self.assertEqual(result['tracks'], [])
+                    self.assertEqual(details.read_bytes(), saved_details)
+        finally:
+            source.write_bytes(saved_source)
+        recovered = self.read('34567890')
+        self.assertEqual(recovered['status'], 'available')
+        self.assertEqual(recovered['counts']['observed'], 2)
+        self.assertEqual(details.read_bytes(), saved_details)
+        self.assertEqual(source.read_bytes(), saved_source)
+
     def test_saved_details_cannot_resurrect_a_playlist_removed_from_newer_directory(self):
         self.write('在线整理快照.json', snapshot())
         self.save_detail()
@@ -231,7 +271,7 @@ class LocalTracksTests(unittest.TestCase):
 
     def test_missing_and_unavailable_echo_filter_without_inventing_tracks(self):
         missing = self.read('99999', metadata='incomplete')
-        self.assertEqual(missing['status'], 'missing_playlist')
+        self.assertEqual(missing['status'], 'unavailable')
         self.assertEqual(missing['metadata_filter'], 'incomplete')
         self.write('在线整理快照.json', snapshot())
         self.write('歌单明细/23456789.json', {'bad': True})
@@ -288,7 +328,7 @@ class LocalTracksTests(unittest.TestCase):
         other = snapshot(names_only=True)
         other['account']['original_id'] = '999'
         self.write('在线名称整理快照.json', other, 100)
-        self.assertEqual(self.read()['status'], 'missing_playlist')
+        self.assertEqual(self.read()['status'], 'unavailable')
 
     def test_invalid_detail_record_preserves_directory_and_fixed_unavailable_status(self):
         live = snapshot()
