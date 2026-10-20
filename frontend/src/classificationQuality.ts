@@ -5,7 +5,7 @@ export const STYLE_LABELS = ['流行抒情', 'R&B 与灵魂', 'Funk 与 Disco', 
 export const SCENE_LABELS = ['学习专注', '通勤散步', '放松睡前', '运动提神', '快乐律动', '独处释怀'];
 export const LANGUAGE_LABELS = ['国语', '粤语', '英语', '日语', '韩语', '俄语', '其他与多语', '器乐或配乐录音', '待辨识'];
 export const REVIEW_LABELS: Record<ClassificationReview, string> = {
-  all: '全部曲目', pending: '待辨识', needs_review: '全部需复核', conflict: '证据冲突',
+  all: '全部曲目', pending: '待辨识', needs_review: '全部需复核', undrafted_review: '需复核且无草稿', conflict: '证据冲突',
   low_confidence: '低把握', weak_evidence: '依据不足', pilot: '试点样本', draft: '已有本地修正',
   version: '版本线索',
 };

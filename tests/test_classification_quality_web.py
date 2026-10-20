@@ -92,6 +92,60 @@ class QualityProjectionTests(unittest.TestCase):
         self.assertEqual(draft['playlists'], original['playlists'])
         self.assertEqual([r['position'] for r in f.view(basis='draft', tag='通勤散步')['records']], [2])
 
+    def test_undrafted_review_save_and_remove_keep_all_review_diagnostics(self):
+        f = self.fixture
+        before = {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+                  for p in (f.project / 'artifacts').iterdir()}
+        self.assertEqual([r['position'] for r in f.view(review='undrafted_review')['records']], [3, 4])
+        self.save(3, styles=['流行抒情'])
+        self.save(1, language='待辨识')
+        for basis in ('original', 'draft'):
+            with self.subTest(basis=basis):
+                page = f.view(review='undrafted_review', basis=basis)
+                self.assertEqual([r['position'] for r in page['records']], [4])
+                self.assertEqual(page['pagination']['total'], 1)
+        self.assertEqual([r['position'] for r in f.view(review='needs_review')['records']], [3, 4])
+        self.assertEqual([r['position'] for r in f.view(review='needs_review', basis='draft')['records']], [1, 3, 4])
+        self.assertEqual([r['position'] for r in f.view(review='draft')['records']], [1, 3])
+        page = f.view()
+        web_classification.save_local_classification_draft(f.project, {
+            'action': 'remove', 'source_version': page['quality']['source_version'],
+            'revision': page['quality']['revision'], 'record_key': page['records'][2]['record_key']})
+        self.assertEqual([r['position'] for r in f.view(review='undrafted_review')['records']], [3, 4])
+        self.assertEqual(before, {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+                                 for p in (f.project / 'artifacts').iterdir()})
+
+    def test_undrafted_review_intersects_search_and_tags_before_pagination(self):
+        f = self.fixture
+        f.records[0]['review_note'] = True
+        f.records[1]['review_note'] = True
+        f.write(fixtures.REPORT, f.report, 101)
+        self.save(1)
+        page = f.view(review='undrafted_review', offset=1, limit=1)
+        self.assertEqual([r['position'] for r in page['records']], [3])
+        self.assertEqual(page['pagination'], {'offset': 1, 'limit': 1, 'total': 3, 'next_offset': 2})
+        filtered = f.view(review='undrafted_review', query='蔡健雅', dimension='scene', tag='通勤散步', limit=1)
+        self.assertEqual([r['position'] for r in filtered['records']], [2])
+        self.assertEqual(filtered['pagination']['total'], 1)
+        self.assertEqual(f.view(review='undrafted_review', query='Rain')['pagination']['total'], 0)
+        self.assertEqual(page['quality']['review_count'], 4)
+
+    def test_undrafted_review_falls_back_when_saved_draft_cannot_apply(self):
+        f = self.fixture
+        self.save(3, styles=['流行抒情'])
+        self.assertEqual([r['position'] for r in f.view(review='undrafted_review')['records']], [4])
+        f.records[0]['evidence_note'] += '，来源更新'
+        f.write(fixtures.REPORT, f.report, 101)
+        for status in ('stale', 'unavailable'):
+            if status == 'unavailable':
+                (f.project / '.organizer' / 'classification-draft.json').write_text('{}', encoding='utf-8')
+            for basis in ('original', 'draft'):
+                with self.subTest(status=status, basis=basis):
+                    page = f.view(review='undrafted_review', basis=basis)
+                    self.assertEqual(page['quality']['draft_status'], status)
+                    self.assertEqual([r['position'] for r in page['records']], [3, 4])
+                    self.assertTrue(all(r['draft'] is None for r in page['records']))
+
     def test_draft_pending_is_derived_while_original_review_diagnostics_remain(self):
         f = self.fixture
         self.save(3, styles=['流行抒情'])
@@ -378,6 +432,29 @@ class QualityDraftHttpTests(unittest.TestCase):
         self.assertEqual(self.get('/api/classification?basis=wrong')[0], 400)
         self.assertEqual(self.get('/api/classification?basis=draft&basis=original')[0], 400)
         self.assertEqual(self.get('/api/classification?review=version')[0], 200)
+
+    def test_undrafted_review_http_query_keeps_validation_and_access_guards(self):
+        path = '/api/classification?review=undrafted_review&basis=draft&limit=1'
+        status, page = self.get(path)
+        self.assertEqual(status, 200)
+        self.assertEqual(page['filters']['review'], 'undrafted_review')
+        self.assertEqual(page['filters']['basis'], 'draft')
+        self.assertEqual(page['pagination']['total'], 2)
+        self.assertEqual([r['position'] for r in page['records']], [3])
+        self.assertEqual(self.post(self.request(page))[0], 200)
+        status, updated = self.get(path)
+        self.assertEqual(status, 200)
+        self.assertEqual(updated['pagination']['total'], 1)
+        self.assertEqual([r['position'] for r in updated['records']], [4])
+        for query in ('/api/classification?review=unknown_review', path + '&review=all'):
+            with self.subTest(query=query):
+                self.assertEqual(self.get(query)[0], 400)
+        for headers in ({'Origin': 'https://foreign.example'}, {'X-Organizer-Session': 'expired'},
+                        {'Host': 'foreign.example'}, {'Sec-Fetch-Site': 'cross-site'}):
+            with self.subTest(headers=headers):
+                self.assertEqual(self.get(path, headers)[0], 403)
+        self.assertEqual(self.controller.calls, [('doctor', {})])
+        self.assertEqual(self.controller.prepared, [])
 
     def test_changes_http_guards_bounded_validation_identity_and_payload(self):
         self.assertEqual(self.post(self.request(self.fixture.view()))[0], 200)

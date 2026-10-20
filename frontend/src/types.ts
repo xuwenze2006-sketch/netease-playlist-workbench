@@ -133,7 +133,7 @@ export interface Job {
 }
 
 export type ClassificationDimension = 'all' | 'scene' | 'style' | 'language';
-export type ClassificationReview = 'all' | 'pending' | 'needs_review' | 'conflict' | 'low_confidence' | 'weak_evidence' | 'pilot' | 'draft' | 'version';
+export type ClassificationReview = 'all' | 'pending' | 'needs_review' | 'undrafted_review' | 'conflict' | 'low_confidence' | 'weak_evidence' | 'pilot' | 'draft' | 'version';
 export interface ClassificationQuery {
   offset: number;
   query: string;

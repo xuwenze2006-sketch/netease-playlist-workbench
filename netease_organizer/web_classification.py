@@ -185,7 +185,7 @@ def _parameters(offset, limit, query, dimension, tag, review, basis='original'):
             or type(limit) is not int or not 1 <= limit <= 100
             or type(dimension) is not str or dimension not in ('all', *_DIMENSIONS)
             or type(review) is not str or review not in (
-                'all', 'pending', 'needs_review', 'conflict', 'low_confidence',
+                'all', 'pending', 'needs_review', 'undrafted_review', 'conflict', 'low_confidence',
                 'weak_evidence', 'pilot', 'draft', 'version')
             or type(basis) is not str or basis not in ('original', 'draft')):
         raise ValueError('分类筛选参数不兼容。')
@@ -424,6 +424,9 @@ def _matches(row, filters, pilot_positions=()):
     if filters['review'] == 'pending' and not _pending_labels(effective):
         return False
     if filters['review'] == 'needs_review' and not _needs_review(row, filters['basis']):
+        return False
+    if filters['review'] == 'undrafted_review' and (
+            not _needs_review(row, filters['basis']) or row['draft'] is not None):
         return False
     if filters['review'] == 'conflict' and not row['review_note']:
         return False

@@ -161,17 +161,19 @@ export function ClassificationEditor({ track, quality, disabled, onSubmit, onSub
   );
 }
 
-export function ClassificationQualitySummary({ quality, onReview, disabled = false }: { quality: ClassificationQuality; disabled?: boolean; onReview: (review: 'needs_review' | 'pilot' | 'draft') => void }) {
+export function ClassificationQualitySummary({ quality, onReview, disabled = false }: { quality: ClassificationQuality; disabled?: boolean; onReview: (review: 'needs_review' | 'undrafted_review' | 'pilot' | 'draft') => void }) {
   return (
     <section className="classification-quality" aria-label="分类质量与修正草稿">
       <div className="classification-quality-heading">
         <strong>需复核 · {quality.review_count.toLocaleString('zh-CN')} 首</strong>
         <button className="classification-inline" onClick={() => onReview('needs_review')}>查看全部需复核</button>
+        <button className="classification-inline" onClick={() => onReview('undrafted_review')}>查看需复核且无草稿</button>
         <button className="classification-inline" disabled={!quality.pilot_positions.length} onClick={() => onReview('pilot')}>查看 {quality.pilot_positions.length} 首试点样本</button>
         <strong>本地修正 · {quality.changed_count.toLocaleString('zh-CN')} 首</strong>
         <button className="classification-inline" disabled={!quality.changed_count} onClick={() => onReview('draft')}>查看本地修正</button>
       </div>
       <p>草稿尚未写入网易云歌单；下方对照展示现有分类与本地修正。</p>
+      <p>“需复核且无草稿”仅查看尚无当前可用修正的曲目，保存后会移出此筛选。已有草稿不代表复核通过，仍可在“全部需复核”中核对。</p>
       <p>未保存的输入仅保留在当前窗口，可收起或筛选后返回继续编辑。本窗口保存或撤销一首歌的修正后，其他编辑会继续保留；外部资料或草稿变化、关闭窗口或重新载入会清除未保存编辑。</p>
       {quality.draft_status === 'stale' && <p className="classification-editor-error" role="status">来源记录已变化，已有草稿需要重新核对，暂时无法保存修正。</p>}
       {quality.draft_status === 'unavailable' && <p className="classification-editor-error" role="status">本地修正草稿暂不可用，请检查记录后重新读取。</p>}

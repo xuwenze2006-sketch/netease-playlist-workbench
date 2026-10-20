@@ -117,6 +117,9 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
           if (pageIntent.current?.selection === selection) {
             pageIntent.current = { ...pageIntent.current, selection: firstPage, generation: null };
           }
+          if (saveIntent.current?.selection === selection) {
+            saveIntent.current = { ...saveIntent.current, selection: firstPage };
+          }
           setPageNotice('记录数量已变化，已返回第 1 页。');
           setSelection(firstPage);
           return;
@@ -201,6 +204,9 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
   useEffect(() => {
     const intent = saveIntent.current;
     if (!intent || intent.revision === null || waiting || draftSubmitting) return;
+    // Automatic page recovery changes the selection before its read begins.
+    // Retain the intent until that page has a result or the read fails.
+    if (intent.selection === selection && !currentData && !failed) return;
     saveIntent.current = null;
     if (!active || view !== 'songs' || failed || !available || selection !== intent.selection ||
       currentData?.quality?.source_version !== intent.sourceVersion || currentData.quality.revision !== intent.revision ||
@@ -232,7 +238,7 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
     setSelection({ ...INITIAL, review: pending ? 'pending' : 'all', ...(nextBasis ? { basis: nextBasis } : {}) });
     if (pending) setView('songs');
   }
-  function openQualityReview(review: 'needs_review' | 'pilot' | 'draft') {
+  function openQualityReview(review: 'needs_review' | 'undrafted_review' | 'pilot' | 'draft') {
     pageIntent.current = null;
     refreshRequested.current = false;
     setPageNotice('');
@@ -620,7 +626,7 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
                         : track.pending_reasons.length > 0;
                       return (
                       <article className="classification-track" data-record-key={track.record_key} key={currentData.quality
-                        ? `${editReset.current}:${editIdentity}:${currentData.quality.draft_status}`
+                        ? `${editReset.current}:${currentData.quality.source_version}:${track.record_key}:${currentData.quality.draft_status}`
                         : track.position}>
                         <span className="classification-position">{track.position}</span>
                         <div className="classification-track-content">
@@ -660,6 +666,7 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
                             )}
                           </details>
                           {currentData.quality && track.record_key && <ClassificationEditor
+                            key={editIdentity}
                             track={track} quality={currentData.quality} disabled={waiting || failed || draftSubmitting || !active}
                             session={editSessions.current.get(editIdentity)} onSessionChange={(session) => {
                               if (session && editIdentity.startsWith(`${editGeneration.current}:`)) editSessions.current.set(editIdentity, session);

@@ -46,11 +46,11 @@ describe('classification quality API boundary', () => {
   it('does not accept an original projection in response to a draft basis request', () => {
     expect(() => normalizeClassification(raw(), { ...request, basis: 'draft' })).toThrow();
   });
-  it('appends basis only for an explicit draft GET and accepts the version filter', async () => {
-    const value = raw(); value.filters = { ...request, basis: 'draft', review: 'version' } as never;
+  it.each(['version', 'undrafted_review'] as const)('appends explicit draft basis and round trips the %s GET filter', async (review) => {
+    const value = raw(); value.filters = { ...request, basis: 'draft', review } as never;
     const fetcher = vi.fn().mockResolvedValue({ ok: true, json: async () => value }); vi.stubGlobal('fetch', fetcher);
-    await fetchClassification('s', { ...request, basis: 'draft', review: 'version' });
-    expect(fetcher.mock.calls[0][0]).toContain('&review=version&basis=draft');
+    await fetchClassification('s', { ...request, basis: 'draft', review });
+    expect(fetcher.mock.calls[0][0]).toContain(`&review=${review}&basis=draft`);
   });
   it('retains quality provenance and review reasons while stripping private fields', () => {
     const value = raw();
@@ -59,7 +59,7 @@ describe('classification quality API boundary', () => {
     expect(parsed.records[0].review_reasons).toEqual(['语言证据冲突']);
     expect(JSON.stringify(parsed)).not.toContain('PRIVATE');
   });
-  it.each(['conflict', 'needs_review', 'low_confidence', 'weak_evidence', 'pilot', 'draft'] as const)('accepts the %s review query', (review) => {
+  it.each(['conflict', 'needs_review', 'undrafted_review', 'low_confidence', 'weak_evidence', 'pilot', 'draft'] as const)('accepts the %s review query', (review) => {
     const value = raw(); value.filters = { ...request, review } as typeof request;
     expect(normalizeClassification(value, { ...request, review }).filters.review).toBe(review);
   });
