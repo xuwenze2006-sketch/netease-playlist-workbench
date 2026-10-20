@@ -18,7 +18,7 @@ class ClassificationGenerationScriptTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix='classification-script-guard-')
         self.addCleanup(temporary.cleanup)
-        self.root = Path(temporary.name)
+        self.root = Path(temporary.name).resolve()
         self.artifacts = self.root / 'artifacts'
         self.artifacts.mkdir()
         self.pending = self.artifacts / '分类生成未完成.json'
