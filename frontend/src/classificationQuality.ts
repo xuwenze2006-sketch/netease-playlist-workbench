@@ -10,9 +10,16 @@ export const REVIEW_LABELS: Record<ClassificationReview, string> = {
   version: '版本线索',
 };
 
+export function correctionTextError(value: unknown, required = false): string {
+  if (typeof value !== 'string') return '请填写有效文本。';
+  if (required && !value.trim()) return '请填写具体的修正理由。';
+  if (Array.from(value).length > 1000) return '最多填写 1000 个字符，请缩短内容。';
+  if (/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\ud800-\udfff]/u.test(value))
+    return '含有不支持的控制字符，请删除后重试。';
+  return '';
+}
 function safeText(value: unknown, empty = false): value is string {
-  return typeof value === 'string' && (empty || !!value.trim()) && Array.from(value).length <= 1000 &&
-    !/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\ud800-\udfff]/u.test(value);
+  return correctionTextError(value, !empty) === '';
 }
 function labels(value: unknown, allowed: string[], maximum: number): value is string[] {
   return Array.isArray(value) && value.length <= maximum && new Set(value).size === value.length &&

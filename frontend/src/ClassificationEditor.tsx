@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type { ClassificationCorrection, ClassificationDraftRequest, ClassificationQuality, ClassificationRecord } from './types';
-import { LANGUAGE_LABELS, SCENE_LABELS, STYLE_LABELS, validCorrection } from './classificationQuality';
+import { correctionTextError, LANGUAGE_LABELS, SCENE_LABELS, STYLE_LABELS, validCorrection } from './classificationQuality';
 import { ClassificationChanges } from './ClassificationChanges';
 
 type Props = {
@@ -29,6 +29,8 @@ export function ClassificationEditor({ track, quality, disabled, onSubmit, sessi
   const id = useId();
   const dirty = JSON.stringify(value) !== JSON.stringify(initialValue(track));
   const blocked = disabled || submitting || quality.draft_status !== 'ready';
+  const reasonError = correctionTextError(value.reason, true);
+  const recordingError = correctionTextError(value.recording_note);
   useEffect(() => {
     if (editing && !blocked && focusReason.current) {
       focusReason.current = false;
@@ -58,7 +60,7 @@ export function ClassificationEditor({ track, quality, disabled, onSubmit, sessi
       update({ ...value, [kind]: selected });
   }
   async function submit(action: 'save' | 'remove') {
-    if (blocked || !track.record_key || action === 'save' && !validCorrection(value)) return;
+    if (blocked || !track.record_key || action === 'save' && (!dirty || !validCorrection(value))) return;
     setSubmitting(true); setError('');
     try {
       const common = { source_version: quality.source_version, revision: quality.revision, record_key: track.record_key };
@@ -124,19 +126,27 @@ export function ClassificationEditor({ track, quality, disabled, onSubmit, sessi
               </select>
             </label>
             <label className="classification-editor-input">修正理由
-              <textarea ref={reasonInput} value={value.reason} maxLength={1000} rows={3} required
+              <textarea ref={reasonInput} value={value.reason} maxLength={2000} rows={3} required
+                aria-describedby={`${id}-reason-help`} aria-invalid={reasonError ? true : undefined}
                 placeholder="记录试听或核查依据，以及标签为什么需要调整"
                 onChange={(event) => update({ ...value, reason: event.target.value })} />
             </label>
+            <p id={`${id}-reason-help`} className={reasonError ? 'classification-field-help invalid' : 'classification-field-help'}>
+              {Array.from(value.reason).length} / 1000 字符{reasonError && ` · ${reasonError}`}
+            </p>
             <label className="classification-editor-input">录音版本依据
-              <textarea value={value.recording_note} maxLength={1000} rows={2}
+              <textarea value={value.recording_note} maxLength={2000} rows={2}
+                aria-describedby={`${id}-recording-help`} aria-invalid={recordingError ? true : undefined}
                 placeholder="例如专辑版本、现场、翻唱、混音或伴奏；尚未核对可留空"
                 onChange={(event) => update({ ...value, recording_note: event.target.value })} />
             </label>
+            <p id={`${id}-recording-help`} className={recordingError ? 'classification-field-help invalid' : 'classification-field-help'}>
+              {Array.from(value.recording_note).length} / 1000 字符{recordingError && ` · ${recordingError}`}
+            </p>
             {!value.styles.length && <p>请选择至少一种风格，尚不能确定时可选“风格待辨识”。</p>}
-            {!value.reason.trim() && <p>填写修正理由后即可保存。</p>}
+            {track.draft && !dirty && <p>当前内容与已保存修正一致，无需重复保存。</p>}
             <div className="classification-correction-actions">
-              <button className="button primary" disabled={blocked || !validCorrection(value)} type="submit">{submitting ? '正在保存…' : '保存本地修正'}</button>
+              <button className="button primary" disabled={blocked || !dirty || !validCorrection(value)} type="submit">{submitting ? '正在保存…' : '保存本地修正'}</button>
               <button className="classification-inline" disabled={blocked || !dirty} type="button" onClick={discard}>放弃未保存修改</button>
               <span className="subtle">Ctrl / ⌘ + Enter 保存</span>
             </div>

@@ -49,6 +49,7 @@ ASSERTIONS = (
     'short_portrait_keyboard', 'short_landscape_content_scroll',
     'short_landscape_controls_in_view', 'short_landscape_keyboard',
     'short_viewport_no_horizontal_overflow', 'short_viewport_filter_and_pagination',
+    'composing_escape_keeps_details',
 )
 _STAGES = frozenset(('layout', 'startup', 'counts', 'pagination', 'song_search', 'artist_search',
                      'no_match', 'keyboard', 'reopen', 'normal', 'reload', 'wide', 'proof',
@@ -234,6 +235,15 @@ def browser_script(url, *, assets_sha256):
     assertions.keyboard_pagination_focus = true;
     stage = 'song_search';
     const search = dialog.getByRole('textbox', {name: '搜索曲名或歌手', exact: true});
+    await search.focus();
+    require(await search.evaluate(element => {
+      const composingEscape = new KeyboardEvent('keydown', {key: 'Escape', bubbles: true,
+        cancelable: true, isComposing: true});
+      element.dispatchEvent(composingEscape);
+      return composingEscape.defaultPrevented && element.closest('dialog')?.open;
+    }));
+    require(await search.evaluate(element => element === document.activeElement));
+    assertions.composing_escape_keeps_details = true;
     await search.fill(' summer ');
     await waitPositions(dialog, [7]);
     await dialog.getByText('ＳＵＭＭＥＲ · 离线验收', {exact: true}).waitFor({state: 'visible'});

@@ -39,6 +39,7 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
   const generation = useRef(0);
   const refreshRequested = useRef(false);
   const resultsHeading = useRef<HTMLHeadingElement>(null);
+  const searchInput = useRef<HTMLInputElement>(null);
   const panel = useRef<HTMLDivElement>(null);
   const saveIntent = useRef<{ source: HTMLElement; selection: Selection; sourceVersion: string;
     recordKey: string; revision: number | null } | null>(null);
@@ -449,6 +450,7 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
             <label className="classification-search">
               <Icon name="search" size={17} />
               <input
+                ref={searchInput}
                 aria-label="搜索歌曲或歌手"
                 placeholder="搜索歌曲或歌手"
                 maxLength={160}
@@ -465,6 +467,7 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
                   onClick={() => {
                     pageIntent.current = null;
                     setInput('');
+                    searchInput.current?.focus({ preventScroll: true });
                   }}
                 >
                   <Icon name="close" size={16} />

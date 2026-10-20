@@ -103,6 +103,74 @@ beforeEach(() => {
 });
 
 describe('keyboard focus after asynchronous local pagination', () => {
+  it.each([
+    { total: 1, moveFocus: false }, { total: 0, moveFocus: false },
+    { total: 1, moveFocus: true }, { total: 0, moveFocus: true },
+  ])(
+    'recovers a shrinking saved page while respecting keyboard focus: %j',
+    async ({ total, moveFocus }) => {
+      const next = deferred<ReturnType<typeof response>>();
+      const first = deferred<ReturnType<typeof response>>();
+      let shrinking = false;
+      const savedPage = (offset: number, count: number, metadata: string) => {
+        const result = page('9000', offset, count);
+        return {
+          ...result,
+          metadata_filter: metadata,
+          counts: { ...result.counts, metadata_missing: count },
+          tracks: result.tracks.map((track) => ({ ...track, metadata_available: false })),
+        };
+      };
+      const fetcher = vi.fn((url: string, _init: RequestInit) => {
+        const parsed = new URL(url, 'http://localhost');
+        const offset = Number(parsed.searchParams.get('offset'));
+        if (offset === 50) {
+          shrinking = true;
+          return next.promise;
+        }
+        if (shrinking) return first.promise;
+        return Promise.resolve(
+          response(savedPage(offset, 120, parsed.searchParams.get('metadata') || 'all')),
+        );
+      });
+      vi.stubGlobal('fetch', fetcher);
+      render(<PlaylistDetails playlist={playlist} onClose={() => {}} />);
+      await screen.findByRole('table');
+      const search = screen.getByRole('textbox', { name: '搜索曲名或歌手' });
+      fireEvent.change(search, { target: { value: '歌曲' } });
+      await waitFor(() => expect(screen.getByText('匹配 120 首已保存歌曲')).toBeTruthy());
+      fireEvent.click(screen.getByRole('button', { name: '只看资料不完整' }));
+      await screen.findByText('符合筛选 120 首已保存歌曲');
+      focusedClick('下一页');
+      await act(async () => next.resolve(response(savedPage(50, total, 'incomplete'))));
+      await waitFor(() =>
+        expect(fetcher.mock.lastCall?.[0]).toBe(
+          '/api/playlists/9000/tracks?offset=0&limit=50&q=%E6%AD%8C%E6%9B%B2&metadata=incomplete',
+        ),
+      );
+      expect(screen.getByText('记录数量已变化，已返回第 1 页。').getAttribute('role')).toBe('status');
+      if (moveFocus) {
+        const close = screen.getByRole('button', { name: '关闭歌曲明细' });
+        close.focus();
+        close.blur();
+      }
+      await act(async () => first.resolve(response(savedPage(0, total, 'incomplete'))));
+      expect(screen.getByText('第 1 页，共 1 页')).toBeTruthy();
+      expect(search).toHaveProperty('value', '歌曲');
+      expect(
+        screen.getByRole('button', { name: '只看资料不完整' }).getAttribute('aria-pressed'),
+      ).toBe('true');
+      expect(document.activeElement).toBe(moveFocus ? document.body : search);
+      if (total) {
+        expect(screen.getByRole('table')).toBeTruthy();
+        expect(screen.queryByText('这份本地记录没有歌曲')).toBeNull();
+      } else {
+        expect(screen.getByText('没有符合筛选的已保存歌曲')).toBeTruthy();
+      }
+      expect(fetcher).toHaveBeenCalledTimes(5);
+      expect(fetcher.mock.calls.every(([, init]) => init.method === 'GET')).toBe(true);
+    },
+  );
   it('returns focus to the same available direction on a middle page and to the other direction at each edge', async () => {
     const { fetcher, next } = setup();
     render(<PlaylistDetails playlist={playlist} onClose={() => {}} />);

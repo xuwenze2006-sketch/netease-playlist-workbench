@@ -226,6 +226,18 @@ describe('local classification results', () => {
     });
   });
 
+  it('returns focus to classification search after clearing it so typing can continue', async () => {
+    await open();
+    const search = screen.getByRole('textbox', { name: '搜索歌曲或歌手' });
+    fireEvent.change(search, { target: { value: '示例歌手' } });
+    const clear = screen.getByRole('button', { name: '清除分类搜索' });
+    clear.focus();
+    fireEvent.click(clear, { detail: 0 });
+    expect(search).toHaveProperty('value', '');
+    expect(screen.queryByRole('button', { name: '清除分类搜索' })).toBeNull();
+    expect(document.activeElement).toBe(search);
+  });
+
   it('aborts old filters and rejects stale success after a newer response', async () => {
     await open();
     let resolveOld!: (value: ClassificationPage) => void;

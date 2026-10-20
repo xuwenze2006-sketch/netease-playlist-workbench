@@ -396,6 +396,32 @@ describe('saved playlist details drawer', () => {
     view.unmount();
     trigger.remove();
   });
+  it.each([{ isComposing: true }, { keyCode: 229 }])(
+    'keeps the drawer and search when Escape cancels an IME composition: %j',
+    async (composition) => {
+      vi.stubGlobal('fetch', route());
+      const close = vi.fn();
+      render(<PlaylistDetails playlist={liked} onClose={close} />);
+      await screen.findByRole('table');
+      const input = screen.getByRole('textbox', { name: '搜索曲名或歌手' });
+      input.focus();
+      fireEvent.change(input, { target: { value: '林俊杰' } });
+      const escape = new KeyboardEvent('keydown', {
+        key: 'Escape',
+        bubbles: true,
+        cancelable: true,
+        ...composition,
+      });
+      fireEvent(input, escape);
+      expect(escape.defaultPrevented).toBe(true);
+      expect(close).not.toHaveBeenCalled();
+      expect(screen.getByRole('dialog').hasAttribute('open')).toBe(true);
+      expect(input).toHaveProperty('value', '林俊杰');
+      expect(document.activeElement).toBe(input);
+      fireEvent.keyDown(input, { key: 'Escape' });
+      expect(close).toHaveBeenCalledTimes(1);
+    },
+  );
   it('aborts pending local reads when closed', async () => {
     const fetcher = vi.fn(
       (_url, init) =>

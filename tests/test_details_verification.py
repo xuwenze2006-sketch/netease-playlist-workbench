@@ -43,6 +43,7 @@ class DetailsEvidenceTests(unittest.TestCase):
             'short_portrait_keyboard', 'short_landscape_content_scroll',
             'short_landscape_controls_in_view', 'short_landscape_keyboard',
             'short_viewport_no_horizontal_overflow', 'short_viewport_filter_and_pagination',
+            'composing_escape_keeps_details',
         )}
         browser = {'kind': 'modern_details_browser_observation', 'verified': True,
                    'viewport': {'width': 390, 'height': 844}, 'frontend_assets_sha256': 'c'*64,
@@ -107,7 +108,7 @@ class DetailsEvidenceTests(unittest.TestCase):
         for field in ('metadata_cross_page_positions', 'metadata_search_intersection',
                       'metadata_clear_keeps_filter', 'metadata_counts_and_time_unchanged',
                       'reopen_resets_metadata', 'complete_metadata_filter_empty',
-                      'playlist_name_unicode_search', 'zero_action_posts'):
+                      'playlist_name_unicode_search', 'zero_action_posts', 'composing_escape_keeps_details'):
             for value in (None, False):
                 observed = json.loads(stdout)
                 if value is None:

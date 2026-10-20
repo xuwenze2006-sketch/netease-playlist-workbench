@@ -64,6 +64,7 @@ function DetailsDrawer({
   const [data, setData] = useState<LocalTrackPage | null>(null);
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
+  const [pageNotice, setPageNotice] = useState('');
   const [readSubmitting, setReadSubmitting] = useState(false);
   const [readError, setReadError] = useState('');
   const readAttempt = useRef<{ before: number | null; sequence: number | null } | null>(null);
@@ -88,6 +89,7 @@ function DetailsDrawer({
   function containFocus(event: KeyboardEvent<HTMLDialogElement>) {
     if (event.key === 'Escape') {
       event.preventDefault();
+      if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
       dismiss();
       return;
     }
@@ -156,7 +158,21 @@ function DetailsDrawer({
           selection,
           controller.signal,
         );
-        if (!disposed && current === generation.current && !closed.current) setData(result);
+        if (disposed || current !== generation.current || closed.current) return;
+        if (
+          result.status === 'available' &&
+          selection.offset > 0 &&
+          selection.offset >= result.pagination.total
+        ) {
+          const firstPage = { ...selection, offset: 0 };
+          const intent = paginationFocus.current;
+          paginationFocus.current = intent?.selection === selection
+            ? { ...intent, selection: firstPage, generation: null } : null;
+          setPageNotice('记录数量已变化，已返回第 1 页。');
+          setSelection(firstPage);
+          return;
+        }
+        setData(result);
       } catch {
         if (!disposed && current === generation.current && !closed.current) setFailed(true);
       } finally {
@@ -262,10 +278,12 @@ function DetailsDrawer({
 
   function resetSearch() {
     paginationFocus.current = null;
+    setPageNotice('');
     setInput('');
     searchInput.current?.focus();
   }
   function changePage(direction: 'previous' | 'next', offset: number, source: HTMLButtonElement) {
+    setPageNotice('');
     const next = { ...selection, offset };
     if (document.activeElement === source) lastFocusedDirection.current = direction;
     paginationFocus.current =
@@ -275,6 +293,7 @@ function DetailsDrawer({
     setSelection(next);
   }
   function retryLocalRead(source: HTMLButtonElement) {
+    setPageNotice('');
     paginationFocus.current =
       document.activeElement === source
         ? { direction: lastFocusedDirection.current, source, selection, generation: null }
@@ -450,6 +469,7 @@ function DetailsDrawer({
               value={input}
               onChange={(event) => {
                 paginationFocus.current = null;
+                setPageNotice('');
                 setInput(event.target.value);
               }}
             />
@@ -471,6 +491,7 @@ function DetailsDrawer({
               aria-pressed={!incomplete}
               onClick={() => {
                 paginationFocus.current = null;
+                setPageNotice('');
                 setSelection((value) =>
                   value.metadata === 'all' ? value : { ...value, metadata: 'all', offset: 0 },
                 );
@@ -484,6 +505,7 @@ function DetailsDrawer({
               aria-pressed={incomplete}
               onClick={() => {
                 paginationFocus.current = null;
+                setPageNotice('');
                 setSelection((value) =>
                   value.metadata === 'incomplete'
                     ? value
@@ -494,6 +516,11 @@ function DetailsDrawer({
               只看资料不完整
             </button>
           </div>
+          {pageNotice && (
+            <p className="details-history-note" role="status">
+              {pageNotice}
+            </p>
+          )}
         </div>
         <div className="details-body" aria-busy={waiting}>
           {waiting ? (

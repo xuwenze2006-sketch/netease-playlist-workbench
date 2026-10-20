@@ -76,6 +76,9 @@
 .classification-editor-input textarea,
 .classification-editor-input select { width: 100%; min-width: 0; box-sizing: border-box; padding: 9px; border: 1px solid #dbd5de; border-radius: 6px; background: white; font: inherit; }
 .classification-editor-input textarea { resize: vertical; line-height: 1.7; }
+.classification-editor .classification-field-help { margin-top: -7px; font-size: 11px; }
+.classification-editor .classification-field-help.invalid { color: #9c3838; }
+.classification-editor [aria-invalid='true'] { border-color: #9c3838; }
 .classification-editor input:focus-visible,
 .classification-editor textarea:focus-visible,
 .classification-editor select:focus-visible { outline: 2px solid var(--red); outline-offset: 2px; }

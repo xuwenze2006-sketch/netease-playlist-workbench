@@ -40,6 +40,8 @@ ASSERTIONS = (
     "collapsed_editor_keeps_unsaved", "filtered_return_keeps_unsaved", "multiline_evidence_roundtrip",
     "keyboard_save_focus", "keyboard_changes_focus", "changes_close_focus", "clear_filters_keeps_basis",
     "narrow_changes_no_horizontal_overflow", "discard_only_unsaved",
+    "clear_search_keyboard_focus", "invalid_evidence_explained", "unicode_evidence_count",
+    "unchanged_correction_not_submitted",
 )
 STAGES = frozenset(("startup", "review", "conflict", "low_score", "editing", "save",
                     "preview", "version", "basis", "changes", "reload", "narrow", "wide", "revert", "proof"))
@@ -134,6 +136,26 @@ def browser_script(url, run_id, assets_hash, manifest, wide, narrow):
     require(await editor().getByRole('textbox', {name: '修正理由', exact: true}).inputValue() === reason &&
       await editor().getByRole('textbox', {name: '录音版本依据', exact: true}).inputValue() === version);
     assertions.filtered_return_keeps_unsaved = true;
+    const search = records().getByRole('textbox', {name: '搜索歌曲或歌手', exact: true});
+    await search.fill('Rain'); await waitPositions([1]);
+    const clearSearch = records().getByRole('button', {name: '清除分类搜索', exact: true});
+    await clearSearch.focus(); await clearSearch.press('Enter');
+    await waitPositions([1, 2, 3, 4]);
+    require(await search.evaluate(el => el === document.activeElement));
+    assertions.clear_search_keyboard_focus = true;
+    const reasonField = editor().getByRole('textbox', {name: '修正理由', exact: true});
+    const saveButton = editor().getByRole('button', {name: '保存本地修正', exact: true});
+    await reasonField.fill('复制内容\t含有制表符');
+    require(await reasonField.getAttribute('aria-invalid') === 'true' && await saveButton.isDisabled());
+    require((await editor().innerText()).includes('含有不支持的控制字符'));
+    await reasonField.press('Control+Enter'); require(draftPosts === 0);
+    assertions.invalid_evidence_explained = true;
+    await reasonField.fill('🎵'.repeat(1000));
+    require((await editor().innerText()).includes('1000 / 1000') && await saveButton.isEnabled());
+    await reasonField.fill('字'.repeat(1001));
+    require((await editor().innerText()).includes('最多填写 1000 个字符') && await saveButton.isDisabled());
+    assertions.unicode_evidence_count = true;
+    await reasonField.fill(reason);
     stage = 'save';
     await editor().getByRole('textbox', {name: '修正理由', exact: true}).press('Control+Enter');
     await page.getByRole('region', {name: '分类质量与修正草稿', exact: true}).getByText('本地修正 · 1 首', {exact: true}).waitFor();
@@ -205,6 +227,10 @@ def browser_script(url, run_id, assets_hash, manifest, wide, narrow):
     await page.setViewportSize({width: 390, height: 844});
     await first().getByRole('button', {name: '编辑本地修正', exact: true}).click();
     require(await editor().getByRole('textbox', {name: '修正理由', exact: true}).inputValue() === reason);
+    require(await editor().getByRole('button', {name: '保存本地修正', exact: true}).isDisabled());
+    await editor().getByRole('textbox', {name: '修正理由', exact: true}).press('Control+Enter');
+    require((await read('/api/classification?limit=50')).quality.revision === 1 && draftPosts === 1);
+    assertions.unchanged_correction_not_submitted = true;
     await editor().getByRole('textbox', {name: '修正理由', exact: true}).fill('尚未保存的临时输入');
     await editor().getByRole('button', {name: '放弃未保存修改', exact: true}).click();
     require(await editor().getByRole('textbox', {name: '修正理由', exact: true}).inputValue() === reason && draftPosts === 1);
