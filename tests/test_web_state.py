@@ -1,16 +1,19 @@
 import json
 import os
+import stat
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
-from netease_organizer.web_state import build_local_state
+from netease_organizer.web_state import _unloaded_directory_source, build_local_state
 
 
 class WebStateTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.project = Path(self.temp.name)
+        self.project = Path(self.temp.name).resolve()
         self.artifacts = self.project / 'artifacts'
         self.artifacts.mkdir()
         self.account = {'id': 'A' * 32, 'original_id': '42', 'nickname': '用户甲', 'token': 'SECRET'}
@@ -130,6 +133,54 @@ class WebStateTests(unittest.TestCase):
         state = build_local_state(self.project)
         self.assertEqual(state['playlists'], [])
         self.assertEqual(state['source'], 'empty')
+
+    def test_missing_directory_remains_empty_but_unreadable_metadata_is_unavailable(self):
+        original_lstat = Path.lstat
+        for target in (self.artifacts, self.artifacts / '在线整理快照.json'):
+            with self.subTest(target=target.name):
+                target_key = os.path.normcase(os.path.abspath(target))
+                blocked = []
+                def denied(path, *args, **kwargs):
+                    if os.path.normcase(os.path.abspath(path)) == target_key:
+                        blocked.append(path)
+                        raise PermissionError('PRIVATE-directory-metadata-denied')
+                    return original_lstat(path, *args, **kwargs)
+                with patch.object(Path, 'lstat', denied):
+                    source = _unloaded_directory_source(self.project)
+                self.assertTrue(blocked, 'directory metadata failure must be injected')
+                self.assertEqual(source, 'unavailable')
+        self.artifacts.rmdir()
+        self.assertEqual(_unloaded_directory_source(self.project), 'empty')
+
+    def test_artifacts_file_is_unavailable(self):
+        self.artifacts.rmdir()
+        self.artifacts.write_text('PRIVATE-not-a-directory', encoding='utf-8')
+        self.assertEqual(_unloaded_directory_source(self.project), 'unavailable')
+
+    def test_untrusted_artifacts_metadata_is_unavailable(self):
+        self.artifacts.rmdir()
+        folder_key = os.path.normcase(os.path.abspath(self.artifacts))
+        original_lstat = Path.lstat
+        for mode, attributes in ((stat.S_IFLNK, 0), (stat.S_IFDIR, 0x400)):
+            with self.subTest(mode=mode, attributes=attributes):
+                observed = []
+                def linked_folder(path, *args, **kwargs):
+                    if os.path.normcase(os.path.abspath(path)) == folder_key:
+                        observed.append(path)
+                        return SimpleNamespace(st_mode=mode, st_file_attributes=attributes)
+                    return original_lstat(path, *args, **kwargs)
+                with patch.object(Path, 'lstat', linked_folder):
+                    source = _unloaded_directory_source(self.project)
+                self.assertTrue(observed, 'untrusted parent metadata must be injected')
+                self.assertEqual(source, 'unavailable')
+
+    def test_dangling_artifacts_symlink_is_unavailable_when_supported(self):
+        self.artifacts.rmdir()
+        try:
+            self.artifacts.symlink_to(self.project / 'missing-records', target_is_directory=True)
+        except OSError:
+            self.skipTest('directory symlink creation is unavailable')
+        self.assertEqual(_unloaded_directory_source(self.project), 'unavailable')
 
     def test_newer_valid_names_snapshot_wins_over_full_snapshot(self):
         self.write('在线整理快照.json', self.snapshot(), timestamp=100)

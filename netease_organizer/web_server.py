@@ -391,6 +391,10 @@ class WorkbenchApplication:
                     or row.get('category') not in ('liked', 'artist', 'normal')
                     or row.get('source') != 'local_record'):
                 raise ValueError('local playlist display unavailable')
+        if raw['source'] == 'empty' and self.project is not None:
+            from .web_state import _unloaded_directory_source
+            if _unloaded_directory_source(self.project) != 'empty':
+                raise ValueError('local directory unavailable')
         return json.loads(json.dumps(raw, ensure_ascii=False, allow_nan=False))
 
     def _local_record_signatures(self):

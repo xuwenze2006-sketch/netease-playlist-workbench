@@ -1,11 +1,13 @@
 import copy
 import http.client
 import json
+import os
+from pathlib import Path
 import threading
 import unittest
 from unittest.mock import patch
 
-from netease_organizer.web_server import create_server, shutdown_server
+from netease_organizer.web_server import WorkbenchApplication, create_server, shutdown_server
 from netease_organizer.web_state import build_local_state
 from tests import test_web_classification as classification_fixture
 from tests.test_web_server import FakeController
@@ -16,7 +18,7 @@ class LocalRecordsRefreshTests(unittest.TestCase):
         self.records = classification_fixture.WebClassificationTests()
         self.records.setUp()
         self.addCleanup(self.records.doCleanups)
-        self.project = self.records.project
+        self.project = self.records.project.resolve()
         assets = self.project / 'dist'
         assets.mkdir()
         (assets / 'index.html').write_text('__ORGANIZER_SESSION__', encoding='utf-8')
@@ -113,6 +115,7 @@ class LocalRecordsRefreshTests(unittest.TestCase):
         def failed():
             raise RuntimeError('PRIVATE-RAW-TOKEN')
         for provider in (failed, lambda: [], lambda: {'source': 'unavailable'},
+                         lambda: {**before['data'], 'source': 'unavailable'},
                          lambda: {**before['data'], 'history': []},
                          lambda: {**before['data'], 'account': {}},
                          lambda: {**before['data'], 'playlists': [{}]},
@@ -123,6 +126,127 @@ class LocalRecordsRefreshTests(unittest.TestCase):
                 self.assertEqual(status, 503)
                 self.assertNotIn('PRIVATE', json.dumps(response))
                 self.assertEqual(self.app.state(), before)
+
+    def test_existing_damaged_directory_preserves_cache_without_classification_records(self):
+        for name in (classification_fixture.PLAN, classification_fixture.REPORT):
+            (self.project / 'artifacts' / name).unlink()
+        directory = self.project / 'artifacts' / classification_fixture.DIRECTORY
+        for provider in (self.provider, None):
+            self.app.state_provider = provider
+            for damaged in ('{PRIVATE-incomplete', json.dumps({'account': 'PRIVATE-bad-schema'})):
+                with self.subTest(provider='callable' if provider else 'default', damaged=damaged):
+                    self.records.write(classification_fixture.DIRECTORY, self.records.directory, 105)
+                    self.app.data = build_local_state(self.project)
+                    before = self.app.state()
+                    directory.write_text(damaged, encoding='utf-8')
+                    status, response = self.get()
+                    self.assertEqual(status, 503)
+                    self.assertNotIn('PRIVATE', json.dumps(response))
+                    self.assertEqual(self.app.state(), before)
+                    self.records.write(classification_fixture.DIRECTORY, self.records.directory, 105)
+                    self.assertEqual(self.get()[0], 200)
+                    self.assertEqual(self.app.state()['data']['account']['nickname'], '离线用户')
+                    self.assertEqual(len(self.app.state()['data']['playlists']), 1)
+        self.assertEqual(self.controller.calls, [('doctor', {})])
+
+    def test_public_state_stays_compatible_while_explicit_refresh_preserves_cache(self):
+        for name in (classification_fixture.PLAN, classification_fixture.REPORT):
+            (self.project / 'artifacts' / name).unlink()
+        before = self.app.state()
+        (self.project / 'artifacts' / classification_fixture.DIRECTORY).write_text('{incomplete', encoding='utf-8')
+        self.assertEqual(build_local_state(self.project)['source'], 'empty')
+        startup = WorkbenchApplication(FakeController(self.project), state_provider=self.provider)
+        self.assertEqual(startup.state()['data']['source'], 'empty')
+        self.assertTrue(startup.state()['connection']['installed'])
+        self.assertEqual(self.get()[0], 503)
+        self.assertEqual(self.app.state(), before)
+        self.assertEqual(self.app.submit('preview_names', {}, session=self.token)[0], 202)
+        self.assertTrue(self.app.wait_for_idle(3))
+        status, state = self.get('/api/state')
+        self.assertEqual(status, 200)
+        self.assertEqual(state['data']['source'], 'empty')
+        self.assertTrue(state['connection']['installed'])
+        self.assertEqual(state['job']['status'], 'completed')
+
+    def test_directory_read_permission_failure_preserves_cache_and_allows_retry(self):
+        for name in (classification_fixture.PLAN, classification_fixture.REPORT):
+            (self.project / 'artifacts' / name).unlink()
+        directory = self.project / 'artifacts' / classification_fixture.DIRECTORY
+        directory_key = os.path.normcase(os.path.abspath(directory))
+        original_open = Path.open
+        providers = (('callable', self.provider), ('default', None),
+                     ('aliased-project', lambda: build_local_state(self.project / 'dist' / '..')))
+        for provider_name, provider in providers:
+            with self.subTest(provider=provider_name):
+                self.app.state_provider = provider
+                before = self.app.state()
+                denied = False
+                def denied_once(path, *args, **kwargs):
+                    nonlocal denied
+                    if os.path.normcase(os.path.abspath(path)) == directory_key and not denied:
+                        denied = True
+                        raise PermissionError('PRIVATE-snapshot-read-denied')
+                    return original_open(path, *args, **kwargs)
+                with patch.object(Path, 'open', denied_once):
+                    status, response = self.get()
+                self.assertTrue(denied, 'snapshot read failure must be injected')
+                self.assertEqual(status, 503)
+                self.assertNotIn('PRIVATE', json.dumps(response))
+                self.assertEqual(self.app.state(), before)
+                self.assertEqual(self.get()[0], 200)
+                self.assertEqual(self.app.state()['data']['account']['nickname'], '离线用户')
+        self.assertEqual(self.controller.calls, [('doctor', {})])
+
+    def test_confirmed_directory_removal_and_empty_project_can_refresh_and_restore(self):
+        for name in (classification_fixture.PLAN, classification_fixture.REPORT,
+                     classification_fixture.DIRECTORY):
+            (self.project / 'artifacts' / name).unlink()
+        for provider in (self.provider, None):
+            with self.subTest(provider='callable' if provider else 'default'):
+                self.app.state_provider = provider
+                for _ in range(2):
+                    status, response = self.get()
+                    self.assertEqual(status, 200)
+                    self.assertEqual(response['status'], 'not_loaded')
+                    self.assertEqual(self.app.state()['data']['source'], 'empty')
+                    self.assertEqual(self.app.state()['data']['playlists'], [])
+                    self.assertIsNone(self.app.state()['data']['account'])
+                self.records.write(classification_fixture.DIRECTORY, self.records.directory, 105)
+                self.assertEqual(self.get()[0], 200)
+                self.assertEqual(self.app.state()['data']['source'], 'local_record')
+                self.assertEqual(len(self.app.state()['data']['playlists']), 1)
+                (self.project / 'artifacts' / classification_fixture.DIRECTORY).unlink()
+        self.assertEqual(self.controller.calls, [('doctor', {})])
+
+    def test_valid_alternate_directory_still_refreshes_when_other_snapshot_is_damaged(self):
+        for name in (classification_fixture.PLAN, classification_fixture.REPORT):
+            (self.project / 'artifacts' / name).unlink()
+        (self.project / 'artifacts' / classification_fixture.DIRECTORY).write_text('{incomplete', encoding='utf-8')
+        self.records.write('在线整理快照.json', self.records.directory, 106)
+        for provider in (self.provider, None):
+            with self.subTest(provider='callable' if provider else 'default'):
+                self.app.state_provider = provider
+                self.assertEqual(self.get()[0], 200)
+                self.assertEqual(self.app.state()['data']['source'], 'local_record')
+                self.assertEqual(self.app.state()['data']['account']['nickname'], '离线用户')
+
+    def test_unreachable_project_root_preserves_cache_and_recovers_when_restored(self):
+        for name in (classification_fixture.PLAN, classification_fixture.REPORT):
+            (self.project / 'artifacts' / name).unlink()
+        moved = self.project.with_name(self.project.name + '-directory-read-test')
+        for provider in (self.provider, None):
+            with self.subTest(provider='callable' if provider else 'default'):
+                self.app.state_provider = provider
+                before = self.app.state()
+                self.project.rename(moved)
+                try:
+                    status, _ = self.get()
+                    self.assertEqual(status, 503)
+                    self.assertEqual(self.app.state(), before)
+                finally:
+                    moved.rename(self.project)
+                self.assertEqual(self.get()[0], 200)
+                self.assertEqual(self.app.state()['data']['account']['nickname'], '离线用户')
 
     def test_unknown_write_latch_and_original_job_are_preserved_even_if_classification_now_complete(self):
         self.app.job = {'id': 'old-job', 'action': 'rename', 'status': 'uncertain',

@@ -2,6 +2,7 @@
 
 import copy
 import re
+import stat
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -170,6 +171,30 @@ def build_local_state(project, *, organizer=None):
     project = Path(project).resolve()
     snapshot_time, snapshot = _load_directory(project)
     return _state_from_directory(project, snapshot_time, snapshot, organizer=organizer)
+
+
+def _unloaded_directory_source(project):
+    """Explicit refresh may clear cached records only after confirming source absence."""
+    folder = project / 'artifacts'
+    try:
+        info = folder.lstat()
+        if (not stat.S_ISDIR(info.st_mode)
+                or getattr(info, 'st_file_attributes', 0) & getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0x400)):
+            return 'unavailable'
+        for name in ('在线整理快照.json', '在线名称整理快照.json'):
+            try:
+                (folder / name).lstat()
+            except FileNotFoundError:
+                continue
+            return 'unavailable'
+    except FileNotFoundError:
+        try:
+            return 'empty' if stat.S_ISDIR(project.stat().st_mode) else 'unavailable'
+        except OSError:
+            return 'unavailable'
+    except OSError:
+        return 'unavailable'
+    return 'empty'
 
 
 def directory_signatures(project):

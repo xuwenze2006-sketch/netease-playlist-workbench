@@ -42,6 +42,14 @@ async function open(initial = page()) {
   await act(async () => { render(<ClassificationPanel />); });
 }
 function editor() { return within(screen.getByRole('group', { name: '修正版本有疑问的歌' })); }
+function nativeDisabledBlur(source: HTMLElement) {
+  // jsdom also ignores blur() on disabled controls, unlike Edge's native blur.
+  const disabled = [source, source.closest('fieldset[disabled]')]
+    .filter((element): element is HTMLElement => !!element && element.hasAttribute('disabled'));
+  disabled.forEach((element) => element.removeAttribute('disabled'));
+  source.blur();
+  disabled.forEach((element) => element.setAttribute('disabled', ''));
+}
 async function edit() {
   fireEvent.click(screen.getByRole('button', { name: '修正分类' }));
   await screen.findByRole('group', { name: '修正版本有疑问的歌' });
@@ -290,6 +298,47 @@ describe('classification review and local corrections', () => {
     expect(reason).toHaveProperty('value', '输入法尚未结束的依据');
   });
 
+  it.each(['reason', 'recording', 'save'] as const)('restores the %s control after native disabling blurs a failed save', async (control) => {
+    await open(); await edit();
+    const reason = editor().getByLabelText('修正理由');
+    const recording = editor().getByLabelText('录音版本依据');
+    fireEvent.change(reason, { target: { value: '保存失败后继续核对\n保留原输入' } });
+    fireEvent.change(recording, { target: { value: '专辑录音\n尚待复听' } });
+    let reject!: (error: Error) => void;
+    vi.mocked(postClassificationDraft).mockImplementation(() => new Promise((_resolve, fail) => { reject = fail; }));
+    const source = control === 'reason' ? reason : control === 'recording' ? recording
+      : editor().getByRole('button', { name: '保存本地修正' });
+    source.focus();
+    if (control === 'save') fireEvent.click(source);
+    else fireEvent.keyDown(source, { key: 'Enter', ctrlKey: true });
+    // Edge blurs disabled controls; jsdom needs that native transition supplied.
+    nativeDisabledBlur(source);
+    expect(document.activeElement).toBe(document.body);
+    await act(async () => { reject(new Error('本地草稿暂时不可写')); });
+    await waitFor(() => expect(document.activeElement).toBe(source));
+    expect(reason).toHaveProperty('value', '保存失败后继续核对\n保留原输入');
+    expect(recording).toHaveProperty('value', '专辑录音\n尚待复听');
+    expect(vi.mocked(postClassificationDraft)).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['focus', 'wheel', 'PageDown'] as const)('does not restore failed-save focus after the user continues with %s', async (move) => {
+    await open(); await edit();
+    const reason = editor().getByLabelText('修正理由');
+    fireEvent.change(reason, { target: { value: '保存时继续浏览其他内容' } });
+    let reject!: (error: Error) => void;
+    vi.mocked(postClassificationDraft).mockImplementation(() => new Promise((_resolve, fail) => { reject = fail; }));
+    reason.focus(); fireEvent.keyDown(reason, { key: 'Enter', ctrlKey: true }); nativeDisabledBlur(reason);
+    const search = screen.getByLabelText('搜索歌曲或歌手');
+    if (move === 'focus') search.focus();
+    else if (move === 'wheel') fireEvent.wheel(document);
+    else fireEvent.keyDown(document, { key: 'PageDown' });
+    await act(async () => { reject(new Error('本地草稿暂时不可写')); });
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', '本地草稿暂时不可写');
+    expect(document.activeElement).toBe(move === 'focus' ? search : document.body);
+    expect(reason).toHaveProperty('value', '保存时继续浏览其他内容');
+    expect(vi.mocked(postClassificationDraft)).toHaveBeenCalledTimes(1);
+  });
+
   it('returns keyboard focus to the same song after saving and accepting a refreshed revision', async () => {
     await open(); await edit();
     fireEvent.change(editor().getByLabelText('修正理由'), { target: { value: '已完成版本核对' } });
@@ -354,7 +403,7 @@ describe('classification review and local corrections', () => {
     fireEvent.change(screen.getByLabelText('分类依据'), { target: { value: 'draft' } });
     await waitFor(() => expect(vi.mocked(fetchClassification).mock.lastCall?.[1].basis).toBe('draft'));
     expect(screen.getByText(/当前回退原分类/)).toBeTruthy();
-    expect(screen.getByRole('button', { name: '语言 · 国语' })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: '语言 · 国语' })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '返回原分类' }));
     await waitFor(() => expect(vi.mocked(fetchClassification).mock.lastCall?.[1].basis).toBe('original'));
   });

@@ -46,7 +46,7 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
   const searchInput = useRef<HTMLInputElement>(null);
   const panel = useRef<HTMLDivElement>(null);
   const saveIntent = useRef<{ source: HTMLElement; selection: Selection; sourceVersion: string;
-    recordKey: string; revision: number | null } | null>(null);
+    recordKey: string; revision: number | null; failed: boolean } | null>(null);
   const songTab = useRef<HTMLButtonElement>(null);
   const playlistTab = useRef<HTMLButtonElement>(null);
   const pageIntent = useRef<{
@@ -206,7 +206,12 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
       currentData?.quality?.source_version !== intent.sourceVersion || currentData.quality.revision !== intent.revision ||
       currentData.quality.draft_status !== 'ready') return;
     if (document.activeElement !== intent.source &&
-      !(!intent.source.isConnected && document.activeElement === document.body)) return;
+      !(document.activeElement === document.body && (intent.failed || !intent.source.isConnected))) return;
+    if (intent.failed) {
+      if (intent.source.isConnected && !intent.source.matches(':disabled'))
+        intent.source.focus({ preventScroll: true });
+      return;
+    }
     const target = panel.current?.querySelector<HTMLButtonElement>(
       `[data-record-key="${intent.recordKey}"] .classification-edit-toggle`);
     (target ?? resultsHeading.current)?.focus({ preventScroll: true });
@@ -273,7 +278,8 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
     const source = document.activeElement;
     saveIntent.current = source instanceof HTMLElement &&
       source.closest('.classification-track')?.getAttribute('data-record-key') === request.record_key
-      ? { source, selection, sourceVersion: request.source_version, recordKey: request.record_key, revision: null } : null;
+      ? { source, selection, sourceVersion: request.source_version, recordKey: request.record_key,
+        revision: null, failed: false } : null;
     try {
       const result = await postClassificationDraft(readSession(), request);
       if (saveIntent.current) saveIntent.current.revision = result.revision;
@@ -295,7 +301,10 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
       setPageNotice(result.message);
       refresh();
     } catch (error) {
-      saveIntent.current = null;
+      if (saveIntent.current) {
+        saveIntent.current.failed = true;
+        saveIntent.current.revision = request.revision;
+      }
       if (postponedRead.current) {
         generation.current += 1;
         setLoading(true);
