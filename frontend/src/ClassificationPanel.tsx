@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import type { KeyboardEvent } from 'react';
+import type { KeyboardEvent, MouseEvent } from 'react';
 import { fetchClassification, postClassificationDraft, readSession } from './api';
 import { ClassificationEditor, ClassificationQualitySummary } from './ClassificationEditor';
 import type { ClassificationEditSession } from './ClassificationEditor';
@@ -50,6 +50,7 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
   const songTab = useRef<HTMLButtonElement>(null);
   const playlistTab = useRef<HTMLButtonElement>(null);
   const pageIntent = useRef<{
+    kind?: 'playlist';
     selection: Selection;
     source: HTMLButtonElement;
     focus: boolean;
@@ -187,13 +188,12 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
       !intent ||
       !active ||
       view !== 'songs' ||
-      waiting ||
-      failed ||
-      !available ||
-      intent.selection !== selection ||
-      intent.generation !== generation.current
+      intent.selection !== selection
     )
       return;
+    // Card navigation reveals a stable heading even while the new read is pending.
+    if (intent.kind !== 'playlist' &&
+      (waiting || failed || !available || intent.generation !== generation.current)) return;
     pageIntent.current = null;
     if (document.activeElement !== document.body && document.activeElement !== intent.source)
       return;
@@ -251,12 +251,18 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
     filter({ dimension, tag });
     setView('songs');
   }
-  function openPlaylist(dimension: Dimension, tag: string) {
-    pageIntent.current = null;
+  function openPlaylist(dimension: Dimension | 'review', tag: string | null, event: MouseEvent<HTMLButtonElement>) {
+    if (dimension !== 'review' && !tag) return;
+    const basis = data?.quality ? 'original' : selection.basis;
+    const next: Selection = dimension === 'review'
+      ? { ...INITIAL, review: 'pending', ...(basis ? { basis } : {}) }
+      : { ...INITIAL, dimension, tag: tag ?? '', ...(data?.quality ? { basis: 'original' as const } : {}) };
+    pageIntent.current = { kind: 'playlist', selection: next, source: event.currentTarget,
+      focus: event.detail === 0 && document.activeElement === event.currentTarget, generation: null };
     refreshRequested.current = false;
     setPageNotice('');
     setInput('');
-    setSelection({ ...INITIAL, dimension, tag, ...(data?.quality ? { basis: 'original' as const } : {}) });
+    setSelection(next);
     setView('songs');
   }
   function changeView(next: View) {
@@ -765,10 +771,7 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
                           ? '当前记录没有可精确匹配的分类标签'
                           : undefined
                       }
-                      onClick={() => {
-                        if (dimension === 'review') clear(true, data?.quality ? 'original' : undefined);
-                        else if (tag) openPlaylist(dimension, tag);
-                      }}
+                      onClick={(event) => openPlaylist(dimension, tag ?? null, event)}
                     >
                       {dimension === 'review' ? '查看全部待辨识' : '查看分类曲目'}
                     </button>

@@ -39,7 +39,9 @@ function twoSongPage(revision = 0, draft: unknown = null): ClassificationPage {
 }
 async function open(initial = page()) {
   vi.mocked(fetchClassification).mockImplementation(async (_session, request) => ({ ...initial, filters: request }));
-  await act(async () => { render(<ClassificationPanel />); });
+  let view!: ReturnType<typeof render>;
+  await act(async () => { view = render(<ClassificationPanel />); });
+  return view;
 }
 function editor() { return within(screen.getByRole('group', { name: '修正版本有疑问的歌' })); }
 function nativeDisabledBlur(source: HTMLElement) {
@@ -70,6 +72,81 @@ beforeEach(() => {
 });
 
 describe('classification review and local corrections', () => {
+  async function navigateOriginalCard(kind: 'quality' | 'legacy' | 'review' = 'quality', detail = 0) {
+    const source = page();
+    if (kind === 'legacy') delete source.quality;
+    if (kind === 'review') source.playlists = [{ name: '分类 · 待辨识', dimension: 'review', count: 1, key: null }];
+    const view = await open(source);
+    fireEvent.change(screen.getByRole('textbox', { name: '搜索歌曲或歌手' }), { target: { value: '旧搜索' } });
+    fireEvent.click(screen.getByRole('tab', { name: '分类歌单' }));
+    const opener = within(screen.getByRole('region', { name: '分类歌单' })).getByRole('button', {
+      name: kind === 'review' ? '查看全部待辨识' : '查看分类曲目',
+    });
+    const heading = screen.getByRole('heading', { name: '逐曲分类结果', hidden: true });
+    const focus = vi.spyOn(heading, 'focus'), scroll = vi.fn(); heading.scrollIntoView = scroll;
+    let resolve!: () => void, reject!: () => void;
+    vi.mocked(fetchClassification).mockImplementationOnce((_session, request) => new Promise((done, fail) => {
+      resolve = () => done({ ...source, filters: request });
+      reject = () => fail(new Error('读取失败'));
+    }));
+    opener.focus();
+    if (detail === 0) fireEvent.keyDown(opener, { key: 'Enter' });
+    fireEvent.click(opener, { detail });
+    return { view, heading, focus, scroll, resolve, reject };
+  }
+
+  it.each(['quality', 'legacy', 'review'] as const)('lands on results immediately after keyboard navigation from a %s original playlist card', async (kind) => {
+    const { heading, focus, scroll, resolve } = await navigateOriginalCard(kind);
+    expect(document.activeElement).toBe(heading);
+    expect(focus).toHaveBeenCalledOnce();
+    expect(scroll).toHaveBeenCalledExactlyOnceWith({ block: 'start' });
+    expect(screen.getByRole('tab', { name: '歌曲分类' }).getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByRole('textbox', { name: '搜索歌曲或歌手' })).toHaveProperty('value', '');
+    expect(vi.mocked(fetchClassification).mock.lastCall?.[1]).toEqual(kind === 'review'
+      ? { offset: 0, dimension: 'all', tag: '', review: 'pending', query: '', basis: 'original' }
+      : { offset: 0, dimension: 'scene', tag: '通勤散步', review: 'all', query: '', ...(kind === 'quality' ? { basis: 'original' } : {}) });
+    await act(async () => { resolve(); });
+    expect(focus).toHaveBeenCalledOnce(); expect(scroll).toHaveBeenCalledOnce();
+    expect(vi.mocked(postClassificationDraft)).not.toHaveBeenCalled();
+  });
+
+  it('scrolls to results without focusing the heading after pointer navigation from an original playlist card', async () => {
+    const { heading, focus, scroll, resolve } = await navigateOriginalCard('quality', 1);
+    expect(document.activeElement).not.toBe(heading); expect(focus).not.toHaveBeenCalled();
+    expect(scroll).toHaveBeenCalledExactlyOnceWith({ block: 'start' });
+    await act(async () => { resolve(); });
+    expect(focus).not.toHaveBeenCalled(); expect(scroll).toHaveBeenCalledOnce();
+    expect(vi.mocked(postClassificationDraft)).not.toHaveBeenCalled();
+  });
+
+  it('keeps the keyboard card destination when its read fails without focusing or scrolling again', async () => {
+    const { heading, focus, scroll, reject } = await navigateOriginalCard();
+    expect(document.activeElement).toBe(heading);
+    await act(async () => { reject(); });
+    expect(screen.getByRole('alert').textContent).toContain('重新读取未完成');
+    expect(document.activeElement).toBe(heading);
+    expect(focus).toHaveBeenCalledOnce(); expect(scroll).toHaveBeenCalledOnce();
+    expect(vi.mocked(postClassificationDraft)).not.toHaveBeenCalled();
+  });
+
+  it.each(['search', 'tab', 'inactive'] as const)('does not move back to card results after later user %s while the read is pending', async (movement) => {
+    const { view, heading, focus, scroll, resolve } = await navigateOriginalCard();
+    expect(document.activeElement).toBe(heading);
+    if (movement === 'search') {
+      const search = screen.getByRole('textbox', { name: '搜索歌曲或歌手' }); search.focus();
+      fireEvent.change(search, { target: { value: '继续输入' } });
+    } else if (movement === 'tab') {
+      const tab = screen.getByRole('tab', { name: '分类歌单' }); tab.focus(); fireEvent.click(tab);
+    } else {
+      view.rerender(<ClassificationPanel active={false} />);
+    }
+    const afterMovement = document.activeElement;
+    await act(async () => { resolve(); });
+    expect(document.activeElement).toBe(afterMovement);
+    expect(focus).toHaveBeenCalledOnce(); expect(scroll).toHaveBeenCalledOnce();
+    expect(vi.mocked(postClassificationDraft)).not.toHaveBeenCalled();
+  });
+
   it.each([true, false])('opens the complete original playlist after draft moves (allMoved=%s)', async (allMoved) => {
     const draft = { styles: ['流行抒情'], scenes: ['放松睡前'], language: '国语', reason: '已核对的草稿', recording_note: '' };
     const source = allMoved ? page(1, draft) : twoSongPage(1, draft);
