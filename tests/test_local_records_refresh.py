@@ -66,6 +66,37 @@ class LocalRecordsRefreshTests(unittest.TestCase):
             self.assertEqual(after[key], before[key])
         self.assertEqual(self.provider_calls, 1)
         self.assertEqual(self.controller.calls, [('doctor', {})])
+
+    def test_pending_generation_rejects_http_refresh_without_replacing_cached_state(self):
+        self.records.complete_evidence()
+        self.assertEqual(self.get()[0], 200)
+        before = self.app.state()
+        marker = self.project / 'artifacts/分类生成未完成.json'
+        marker.write_text('incomplete generation', encoding='utf-8')
+        status, response = self.get()
+        self.assertEqual(status, 503)
+        self.assertFalse(response['accepted'])
+        self.assertEqual(self.app.state(), before)
+        marker.unlink()
+        status, response = self.get()
+        self.assertEqual(status, 200)
+        self.assertEqual(response['verification'], 'verified')
+        self.assertEqual(self.controller.calls, [('doctor', {})])
+
+    def test_pending_appearing_during_http_refresh_cannot_publish_new_state(self):
+        before = self.app.state()
+        marker = self.project / 'artifacts/分类生成未完成.json'
+        def changing_provider():
+            state = self.provider()
+            marker.write_text('generation started during refresh', encoding='utf-8')
+            return state
+        self.app.state_provider = changing_provider
+        self.assertEqual(self.get()[0], 503)
+        self.assertEqual(self.app.state(), before)
+        marker.unlink()
+        self.app.state_provider = self.provider
+        self.assertEqual(self.get()[0], 200)
+        self.assertEqual(self.controller.calls, [('doctor', {})])
         self.assertEqual(self.controller.prepared, [])
 
     def test_normal_classification_queries_and_state_polling_never_refresh_cached_records(self):

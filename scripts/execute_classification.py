@@ -6,6 +6,7 @@ from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from netease_organizer.service import Organizer
 from netease_organizer.classification_execution import execute_classification,validate_plan
+from netease_organizer.classification_generation import require_complete_generation
 from scripts.classification_control import ClassificationFileControl
 
 
@@ -30,7 +31,9 @@ def main():
     group.add_argument('--execute-approved',action='store_true',help='Explicitly execute the approved default-visibility plan once.')
     group.add_argument('--resume-verified',action='store_true',help='Recheck the recorded complete prefix and execute only untouched remaining jobs.')
     args=parser.parse_args();root=Path(__file__).resolve().parents[1]
+    require_complete_generation(root)
     plan=validate_plan(json.loads((root/'artifacts/分类整理计划.json').read_text(encoding='utf-8')))
+    require_complete_generation(root)
     if not args.execute_approved and not args.resume_verified:
         print(json.dumps({'status':'preview','jobs':len(plan['jobs']),'source_count':plan['source_track_count'],'account_changed':False},ensure_ascii=False));return
     controller=Organizer(root)

@@ -82,6 +82,18 @@ class ClassificationExecutionTests(unittest.TestCase):
     def artifact(self, name):
         return self.project / "artifacts" / name
 
+    def test_incomplete_generation_blocks_before_recovery_or_account_reads(self):
+        self.artifact('分类生成未完成.json').parent.mkdir(exist_ok=True)
+        self.artifact('分类生成未完成.json').write_text('malformed pending', encoding='utf-8')
+        with patch.object(self.controller, 'write_recovery') as recovery, \
+                patch.object(self.controller.reader, 'load') as read:
+            result = execute_classification(self.controller, self.plan)
+        self.assertEqual(result['status'], 'blocked')
+        self.assertFalse(result['write_attempted'])
+        recovery.assert_not_called()
+        read.assert_not_called()
+        self.assertFalse(self.cli.calls)
+
     def test_complete_metadata_partial_baseline_chunks_once_and_keeps_legacy_records(self):
         old = self.artifact("歌手精选执行结果.json")
         old.parent.mkdir()

@@ -16,7 +16,11 @@ class LocalArtifactWriter:
     """Replace Organizer construction, including its real CLI/cache dependencies."""
 
     def __init__(self, root):
-        self.artifacts = Path(root) / 'artifacts'
+        self.project = Path(root).resolve()
+        self.artifacts = self.project / 'artifacts'
+
+    def _workspace_target(self, relative):
+        return self.project / relative
 
     def _write_artifact(self, filename, text, *, newline=None):
         (self.artifacts / filename).write_text(text, encoding='utf-8', newline=newline)

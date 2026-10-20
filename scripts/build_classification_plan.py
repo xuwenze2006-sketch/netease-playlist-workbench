@@ -1,4 +1,5 @@
 """Build the independent approved classification plan and public local report."""
+import argparse
 import csv
 import io
 import json
@@ -11,12 +12,11 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from netease_organizer.classification_planning import SCENES,STYLES,LANGUAGES,infer_language,validate_rows
 from netease_organizer.classification_execution import validate_plan
 from netease_organizer.service import Organizer
+from netease_organizer.classification_generation import generation_lease,publish_exports,require_unexecuted
 
 
-def main():
-    root=Path(__file__).resolve().parents[1];a=root/'artifacts';controller=Organizer(root)
-    if any((a/x).exists() for x in ('分类整理执行进度.json','分类整理执行结果.json')):
-        raise ValueError('分类已有执行记录；不会重新生成或替换批准计划。')
+def build_exports(root):
+    a=root/'artifacts'
     snap=json.loads((a/'全库分类-账号基线.json').read_text(encoding='utf-8'))['snapshot']
     source=snap['liked'];tracks=source['tracks']
     if source['track_count']!=len(tracks) or not source['membership_complete']:
@@ -92,9 +92,6 @@ def main():
              'dimensions':dict(Counter(j['dimension'] for j in plan_jobs)),
              'playlists':[{'name':j['name'],'count':len(j['candidate_track_ids'])} for j in plan_jobs]}
     now=datetime.now().astimezone().isoformat()
-    controller._write_artifact('分类整理计划.json',json.dumps(plan,ensure_ascii=False,indent=2)+'\n')
-    controller._write_artifact('全库分类-逐曲结果.json',json.dumps({'kind':'classification_report','created_at':now,'summary':summary,'records':records},ensure_ascii=False,indent=2)+'\n')
-    controller._write_artifact('全库分类-需复核录音.json',json.dumps(review,ensure_ascii=False,indent=2)+'\n')
     def cell(x):
         s=str(x)
         # Retain the source text; only the spreadsheet export gains a literal prefix.
@@ -103,7 +100,7 @@ def main():
     out=io.StringIO(newline='');w=csv.writer(out,lineterminator='\n')
     w.writerow(['序号','歌曲','艺人','风格','场景','语言','待辨识项','风格依据','语言依据'])
     for r in records:w.writerow([cell(x) for x in [r['position'],r['name'],r['artists'],'；'.join(r['styles']),'；'.join(r['scenes']),r['language'],'；'.join(r['pending_reasons']),r['evidence_note'],r['language_evidence_note']]])
-    controller._write_artifact('喜欢的音乐-分类明细.csv','\ufeff'+out.getvalue().removesuffix('\n'),newline='')
+    csv_text='\ufeff'+out.getvalue().removesuffix('\n')
     md=['# 喜欢的音乐分类清单','',f'当前红心歌曲 {len(tracks)} 首，分类歌单 {len(plan_jobs)} 个，集合覆盖 {summary["covered_count"]} 首。',
         f'风格待辨识 {summary["unknown_style_count"]} 首，语言待辨识 {summary["unknown_language_count"]} 首；待辨识歌单并集 {len(pending)} 首。','',
         '同一首歌可以进入多个风格、场景或语言入口。分类不删除原始红心歌曲。',
@@ -113,7 +110,25 @@ def main():
         '用户已同意按平台默认可见性创建（可能公开）；当前此文件只代表本地计划，执行状态见独立执行结果。','',
         '| 分类歌单 | 歌曲数 |','| --- | ---: |']
     md.extend(f'| {j["name"]} | {len(j["candidate_track_ids"])} |' for j in plan_jobs)
-    controller._write_artifact('喜欢的音乐-分类清单.md','\n'.join(md)+'\n')
+    outputs=[
+        ('全库分类-逐曲结果.json',json.dumps({'kind':'classification_report','created_at':now,'summary':summary,'records':records},ensure_ascii=False,indent=2)+'\n',None),
+        ('全库分类-需复核录音.json',json.dumps(review,ensure_ascii=False,indent=2)+'\n',None),
+        ('喜欢的音乐-分类明细.csv',csv_text,''),
+        ('喜欢的音乐-分类清单.md','\n'.join(md)+'\n',None),
+        ('分类整理计划.json',json.dumps(plan,ensure_ascii=False,indent=2)+'\n',None)]
+    return plan,summary,outputs
+
+
+def main(argv=()):
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--repair-missing',action='store_true',help='Reconstruct only missing local exports for the unchanged saved plan; never execute an account operation.')
+    args=parser.parse_args(argv)
+    root=Path(__file__).resolve().parents[1];controller=Organizer(root)
+    with generation_lease(controller):
+        if not args.repair_missing:require_unexecuted(controller)
+        plan,summary,outputs=build_exports(root)
+        written=publish_exports(controller,plan,outputs,repair_missing=args.repair_missing)
+    if args.repair_missing:summary={**summary,'mode':'repair_missing','reconstructed_files':written}
     print(json.dumps(summary,ensure_ascii=False))
 
-if __name__=='__main__':main()
+if __name__=='__main__':main(sys.argv[1:])

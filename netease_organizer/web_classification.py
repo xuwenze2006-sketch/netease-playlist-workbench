@@ -16,6 +16,7 @@ from .classification_execution import (
     ClassificationError, INTENT_FILE, PLAN_FILE, RECEIPT_FILE,
     _encoded, _journal, _result, plan_digest, validate_plan,
 )
+from .classification_generation import PENDING_FILE, generation_incomplete
 from .classification_planning import LANGUAGES, SCENES, STYLES
 from .classification_drafts import DraftConflict, DraftError, MAX_REVISION, load_draft, mutate_draft
 from .classification_quality import (
@@ -29,7 +30,7 @@ MAX_PRIVATE_BYTES = 2 * 1024 * 1024
 REPORT_FILE = '全库分类-逐曲结果.json'
 FINAL_FILE = '分类整理最终核验.json'
 _DIRECTORIES = ('在线整理快照.json', '在线名称整理快照.json')
-_FILES = (PLAN_FILE, REPORT_FILE, INTENT_FILE, RECEIPT_FILE, FINAL_FILE, *_DIRECTORIES)
+_FILES = (PLAN_FILE, REPORT_FILE, INTENT_FILE, RECEIPT_FILE, FINAL_FILE, *_DIRECTORIES, PENDING_FILE)
 _SUMMARY_FIELDS = ('source_count', 'covered_count', 'playlist_count', 'pending_count',
                    'unknown_style_count', 'unknown_language_count')
 _DIMENSIONS = ('scene', 'style', 'language')
@@ -451,6 +452,8 @@ def _matches(row, filters, pilot_positions=()):
 
 
 def _build_projection(project):
+    if generation_incomplete(project):
+        raise _Invalid()
     plan_record = _load(project, PLAN_FILE, MAX_PRIVATE_BYTES)
     report_record = _load(project, REPORT_FILE, MAX_REPORT_BYTES)
     if plan_record is _MISSING or report_record is _MISSING:

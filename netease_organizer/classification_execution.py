@@ -13,6 +13,7 @@ from .online import OnlineReader
 from .rename import _name
 from .runtime import OperationPaused
 from .write_journal import write_lease, WriteLeaseBusy
+from .classification_generation import generation_incomplete, INCOMPLETE_MESSAGE
 
 
 MAX_RECORD_BYTES = 2 * 1024 * 1024
@@ -259,6 +260,19 @@ def _blocked(message, status="blocked"):
             "items": [], "message": message}
 
 
+def validate_export_repair_plan(controller, candidate):
+    """Local reconstruction may not change a saved or executed plan's scope."""
+    plan = validate_plan(_read(controller, PLAN_FILE))
+    if plan != validate_plan(candidate):
+        raise ClassificationError('当前输入与已保存分类计划不一致，不能补齐导出；原计划保持不变。')
+    intent, receipt = _read(controller, INTENT_FILE), _read(controller, RECEIPT_FILE)
+    if intent is not _MISSING or receipt is not _MISSING:
+        journal = _journal(intent)
+        if journal['plan'] != plan or classification_pending(controller):
+            raise ClassificationError('分类执行记录仍需核对，已保留原记录；不能补齐导出。')
+    return plan
+
+
 def execute_classification(controller, plan, *, accept_default_visibility=True):
     """Explicit new batch only; known or unknown prior batches are never replayed."""
     executor, confirmed_result, final_result = None, None, None
@@ -270,6 +284,8 @@ def execute_classification(controller, plan, *, accept_default_visibility=True):
         if (controller.project / relative).is_symlink():
             _invalid()
         with write_lease(controller._workspace_target(relative)):
+            if generation_incomplete(controller.project):
+                return _blocked(INCOMPLETE_MESSAGE)
             if controller.write_recovery()["status"] == "review_required":
                 return {**_blocked("上次账号修改仍待核对，已保留记录；本次不会提交分类修改。"), "outcome_known": False}
             if _read(controller, INTENT_FILE) is not _MISSING or _read(controller, RECEIPT_FILE) is not _MISSING:
@@ -457,6 +473,8 @@ def resume_verified_classification(controller, *, accept_default_visibility=True
         if (controller.project / relative).is_symlink():
             _invalid()
         with write_lease(controller._workspace_target(relative)):
+            if generation_incomplete(controller.project):
+                return _blocked(INCOMPLETE_MESSAGE)
             recovery = controller.write_recovery()
             raw_intent = _read(controller, INTENT_FILE)
             intent = _journal(raw_intent)

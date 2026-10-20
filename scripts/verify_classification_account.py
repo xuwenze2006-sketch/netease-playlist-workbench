@@ -5,13 +5,23 @@ from datetime import datetime
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from netease_organizer.classification_execution import validate_plan,plan_digest,classification_pending
+from netease_organizer.classification_generation import generation_lease,require_complete_generation
 from netease_organizer.create import ArtistExecutor
 from netease_organizer.online import OnlineReader
 from netease_organizer.service import Organizer
 
 
 def main():
-    root=Path(__file__).resolve().parents[1];a=root/'artifacts';controller=Organizer(root)
+    root=Path(__file__).resolve().parents[1]
+    require_complete_generation(root)
+    controller=Organizer(root)
+    with generation_lease(controller):
+        require_complete_generation(root)
+        _verify(root,controller)
+
+
+def _verify(root,controller):
+    a=root/'artifacts'
     plan=validate_plan(json.loads((a/'分类整理计划.json').read_text(encoding='utf-8')))
     receipt=json.loads((a/'分类整理执行结果.json').read_text(encoding='utf-8'))
     if (classification_pending(controller) or receipt.get('status')!='completed'

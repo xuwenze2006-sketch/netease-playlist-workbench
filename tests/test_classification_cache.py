@@ -15,6 +15,9 @@ from tests.test_web_classification import (
 )
 
 
+PENDING = '分类生成未完成.json'
+
+
 class ClassificationCacheTests(unittest.TestCase):
     def setUp(self):
         self.fixture = self.make_fixture()
@@ -74,6 +77,125 @@ class ClassificationCacheTests(unittest.TestCase):
         with patch.object(display, '_report', wraps=display._report) as report:
             self.assertEqual(self.fixture.view()['verification'], 'verified')
         self.assertEqual(report.call_count, 1)
+
+    def test_pending_marker_alone_evicts_warm_projection_and_clear_revalidates(self):
+        sources = {name: (self.fixture.project / 'artifacts' / name).read_bytes()
+                   for name in (PLAN, REPORT, INTENT, RECEIPT, FINAL, DIRECTORY)}
+        self.assertEqual(self.fixture.view()['verification'], 'verified')
+        marker = self.fixture.write(PENDING, {'status': 'pending'}, 110)
+        result = self.fixture.view()
+        self.assertEqual(result['status'], 'unavailable')
+        self.assertEqual(result['records'], [])
+        self.assertIsNone(result['verified_at'])
+        self.assertNotIn(self.fixture.project, display._PROJECTION_CACHE)
+        history, timestamp = display.build_classification_history(self.fixture.project)
+        self.assertEqual(history['status'], 'completed')
+        self.assertEqual(timestamp, 103)
+        marker.unlink()
+        with patch.object(display, '_report', wraps=display._report) as report:
+            self.assertEqual(self.fixture.view()['verification'], 'verified')
+        self.assertEqual(report.call_count, 1)
+        self.assertEqual({name: (self.fixture.project / 'artifacts' / name).read_bytes()
+                          for name in sources}, sources)
+
+    def test_pending_marker_created_mid_projection_discards_result(self):
+        load_directory = display._load_directory
+
+        def mark_pending(project):
+            self.fixture.write(PENDING, {'status': 'pending'}, 110)
+            return load_directory(project)
+
+        with patch.object(display, '_load_directory', side_effect=mark_pending):
+            result = self.fixture.view()
+        self.assertEqual(result['status'], 'unavailable')
+        self.assertEqual(result['records'], [])
+        self.assertIsNone(result['verified_at'])
+        self.assertNotIn(self.fixture.project, display._PROJECTION_CACHE)
+
+    def test_pending_marker_created_while_cached_filtering_discards_and_evicts(self):
+        self.assertEqual(self.fixture.view()['verification'], 'verified')
+        match = display._matches
+        changed = False
+
+        def mark_pending(row, filters, pilot_positions=()):
+            nonlocal changed
+            if not changed:
+                changed = True
+                self.fixture.write(PENDING, {'status': 'pending'}, 110)
+            return match(row, filters, pilot_positions)
+
+        with patch.object(display, '_matches', side_effect=mark_pending):
+            result = self.fixture.view(query='Rain')
+        self.assertEqual(result['status'], 'unavailable')
+        self.assertEqual(result['records'], [])
+        self.assertIsNone(result['verified_at'])
+        self.assertNotIn(self.fixture.project, display._PROJECTION_CACHE)
+
+    def test_pending_marker_removed_mid_projection_discards_result(self):
+        marker = self.fixture.write(PENDING, {'status': 'pending'}, 110)
+        build_projection = display._build_projection
+
+        def finish_generation(project):
+            marker.unlink()
+            return build_projection(project)
+
+        with patch.object(display, '_build_projection', side_effect=finish_generation):
+            result = self.fixture.view()
+        self.assertEqual(result['status'], 'unavailable')
+        self.assertEqual(result['records'], [])
+        self.assertNotIn(self.fixture.project, display._PROJECTION_CACHE)
+        self.assertEqual(self.fixture.view()['verification'], 'verified')
+
+    def test_pending_marker_directory_invalid_json_and_oversize_fail_closed(self):
+        marker = self.fixture.project / 'artifacts' / PENDING
+        for kind in ('directory', 'invalid_json', 'oversize'):
+            with self.subTest(kind=kind):
+                self.assertEqual(self.fixture.view()['verification'], 'verified')
+                if kind == 'directory':
+                    marker.mkdir()
+                else:
+                    marker.write_bytes(b'?' if kind == 'invalid_json' else
+                                       b' ' * (display.MAX_PRIVATE_BYTES + 1))
+                try:
+                    result = self.fixture.view()
+                    self.assertEqual(result['status'], 'unavailable')
+                    self.assertEqual(result['records'], [])
+                    self.assertNotIn(self.fixture.project, display._PROJECTION_CACHE)
+                finally:
+                    marker.rmdir() if kind == 'directory' else marker.unlink()
+
+    def test_pending_marker_symlink_and_dangling_symlink_fail_closed(self):
+        marker = self.fixture.project / 'artifacts' / PENDING
+        for dangling in (False, True):
+            with self.subTest(dangling=dangling):
+                self.assertEqual(self.fixture.view()['verification'], 'verified')
+                target = marker.with_name('missing-marker-target') if dangling else marker.with_name(REPORT)
+                try:
+                    marker.symlink_to(target)
+                except (NotImplementedError, OSError) as error:
+                    self.skipTest(f'Creating local symlinks is unavailable: {error}')
+                try:
+                    result = self.fixture.view()
+                    self.assertEqual(result['status'], 'unavailable')
+                    self.assertEqual(result['records'], [])
+                    self.assertNotIn(self.fixture.project, display._PROJECTION_CACHE)
+                finally:
+                    marker.unlink()
+
+    def test_unreadable_pending_marker_path_evicts_verified_cache(self):
+        self.assertEqual(self.fixture.view()['verification'], 'verified')
+        original = Path.lstat
+
+        def unreadable(path, *args, **kwargs):
+            if path.name == PENDING:
+                raise PermissionError('unreadable generation marker')
+            return original(path, *args, **kwargs)
+
+        with patch.object(Path, 'lstat', unreadable):
+            result = self.fixture.view()
+        self.assertEqual(result['status'], 'unavailable')
+        self.assertEqual(result['records'], [])
+        self.assertNotIn(self.fixture.project, display._PROJECTION_CACHE)
 
     def test_atomic_same_size_and_mtime_report_replacement_cannot_reuse_old_rows(self):
         self.assertEqual(self.fixture.view()['records'][0]['name'], 'Rain · 雨の音')

@@ -1,5 +1,6 @@
 import json
 import unittest
+from unittest.mock import patch
 
 from netease_organizer import classification_execution as execution
 from netease_organizer.write_journal import write_lease
@@ -10,6 +11,18 @@ class ClassificationResumeTests(unittest.TestCase):
     setUp = fixtures.ClassificationExecutionTests.setUp
     new_controller = fixtures.ClassificationExecutionTests.new_controller
     artifact = fixtures.ClassificationExecutionTests.artifact
+
+    def test_incomplete_generation_blocks_resume_before_recovery_or_account_reads(self):
+        self.artifact('分类生成未完成.json').parent.mkdir(exist_ok=True)
+        self.artifact('分类生成未完成.json').mkdir()
+        with patch.object(self.controller, 'write_recovery') as recovery, \
+                patch.object(self.controller.reader, 'load') as read:
+            result = execution.resume_verified_classification(self.controller)
+        self.assertEqual(result['status'], 'blocked')
+        self.assertFalse(result['write_attempted'])
+        recovery.assert_not_called()
+        read.assert_not_called()
+        self.assertFalse(self.cli.calls)
 
     def seed_interrupted(self):
         first = self.plan["jobs"][0]
