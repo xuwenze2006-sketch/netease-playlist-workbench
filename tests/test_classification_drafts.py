@@ -148,6 +148,50 @@ class ClassificationDraftTests(unittest.TestCase):
                                      self.request(source_version='b' * 64, revision=1))
         self.assertEqual(self.path.read_bytes(), before)
 
+    def test_changed_source_with_missing_record_is_conflict_without_creating_storage(self):
+        current_records = self.records[1:]
+        original = copy.deepcopy(current_records)
+        for action in ('save', 'remove'):
+            request = self.request()
+            if action == 'remove':
+                request = {key: request[key] for key in ('source_version', 'revision', 'record_key')}
+                request['action'] = action
+            with self.subTest(action=action):
+                with self.assertRaises(self.drafts.DraftError) as failure:
+                    self.drafts.mutate_draft(self.project, 'b' * 64, current_records, request)
+                self.assertIsInstance(failure.exception, self.drafts.DraftConflict)
+                self.assertEqual(current_records, original)
+                self.assertFalse(self.path.parent.exists())
+
+    def test_same_source_unknown_record_is_invalid_without_creating_storage(self):
+        for action in ('save', 'remove'):
+            request = self.request(record_key='3' * 32)
+            if action == 'remove':
+                request = {key: request[key] for key in ('source_version', 'revision', 'record_key')}
+                request['action'] = action
+            with self.subTest(action=action):
+                with self.assertRaises(self.drafts.DraftError) as failure:
+                    self.drafts.mutate_draft(self.project, self.version, self.records, request)
+                self.assertNotIsInstance(failure.exception, self.drafts.DraftConflict)
+                self.assertEqual(failure.exception.code, 'invalid_request')
+                self.assertFalse(self.path.parent.exists())
+
+    def test_malformed_stale_request_is_invalid_before_source_conflict(self):
+        requests = [self.request(**changes) for changes in (
+            {'styles': []}, {'language': 'invalid'}, {'reason': ''},
+            {'recording_note': '\t'}, {'extra': 'unexpected'},
+            {'revision': True}, {'record_key': '../source'}, {'source_version': 'invalid'},
+        )]
+        requests.append({'action': 'remove', 'source_version': self.version,
+                         'revision': 0, 'record_key': self.key, 'reason': 'unexpected'})
+        for request in requests:
+            with self.subTest(request=repr(request)):
+                with self.assertRaises(self.drafts.DraftError) as failure:
+                    self.drafts.mutate_draft(self.project, 'b' * 64, self.records[1:], request)
+                self.assertNotIsInstance(failure.exception, self.drafts.DraftConflict)
+                self.assertEqual(failure.exception.code, 'invalid_request')
+                self.assertFalse(self.path.parent.exists())
+
     def test_concurrent_compare_and_swap_only_commits_one_request(self):
         barrier = threading.Barrier(2)
 

@@ -518,7 +518,9 @@ def save_local_classification_draft(project, request):
         projection = _cached_projection(project, generation)
         if projection is None:
             projection = _build_projection(project)
-        if projection is None or generation != _cache_generation(project):
+        if projection is None:
+            raise DraftError('classification source unavailable', code='unavailable')
+        if generation != _cache_generation(project):
             raise DraftConflict('classification source changed')
         result = mutate_draft(project, projection['quality']['source_version'],
                               projection['records'], request)
@@ -529,7 +531,7 @@ def save_local_classification_draft(project, request):
     except (DraftConflict, DraftError):
         raise
     except (OSError, ValueError, TypeError, KeyError, UnicodeError, RecursionError, ClassificationError):
-        raise DraftError('classification source unavailable') from None
+        raise DraftError('classification source unavailable', code='unavailable') from None
 
 
 def build_local_classification(project, *, offset=0, limit=50, query='', dimension='all', tag='',

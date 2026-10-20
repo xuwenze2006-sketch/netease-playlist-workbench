@@ -10,6 +10,7 @@ export function ClassificationChanges({ quality, disabled }: { quality: Classifi
   const [retry, setRetry] = useState(0);
   const generation = useRef(0);
   const detailHeading = useRef<HTMLHeadingElement>(null);
+  const retryButton = useRef<HTMLButtonElement>(null);
   const detailSection = useRef<HTMLElement>(null);
   const openers = useRef(new Map<string, HTMLButtonElement>());
   const detailIntent = useRef<{
@@ -44,7 +45,6 @@ export function ClassificationChanges({ quality, disabled }: { quality: Classifi
         if (!disposed && currentGeneration === generation.current) setSaved({ selection: currentSelection, page });
       } catch (cause) {
         if (!disposed && currentGeneration === generation.current) {
-          detailIntent.current = null;
           setFailure({ selection: currentSelection,
             message: cause instanceof Error ? cause.message : '歌单变动暂时无法读取，请刷新分类记录后核对。' });
         }
@@ -57,7 +57,7 @@ export function ClassificationChanges({ quality, disabled }: { quality: Classifi
     const cancelOnFocus = (event: FocusEvent) => {
       if (detailIntent.current && event.target !== detailIntent.current.source) detailIntent.current = null;
     };
-    const cancelOnPointer = (event: PointerEvent) => {
+    const cancelOnPointer = (event: Event) => {
       if (detailIntent.current && !detailIntent.current.source.contains(event.target as Node)) detailIntent.current = null;
     };
     const cancelOnScroll = () => { detailIntent.current = null; };
@@ -67,11 +67,13 @@ export function ClassificationChanges({ quality, disabled }: { quality: Classifi
     };
     document.addEventListener('focusin', cancelOnFocus);
     document.addEventListener('pointerdown', cancelOnPointer);
+    document.addEventListener('touchstart', cancelOnPointer, { passive: true });
     document.addEventListener('wheel', cancelOnScroll, { passive: true });
     document.addEventListener('keydown', cancelOnScrollKey);
     return () => {
       document.removeEventListener('focusin', cancelOnFocus);
       document.removeEventListener('pointerdown', cancelOnPointer);
+      document.removeEventListener('touchstart', cancelOnPointer);
       document.removeEventListener('wheel', cancelOnScroll);
       document.removeEventListener('keydown', cancelOnScrollKey);
       detailIntent.current = null;
@@ -80,15 +82,20 @@ export function ClassificationChanges({ quality, disabled }: { quality: Classifi
 
   useEffect(() => {
     const intent = detailIntent.current;
-    if (!intent || !current || disabled || !ready || intent.selection !== currentSelection ||
+    if (!intent || (!current && !error) || disabled || !ready || intent.selection !== currentSelection ||
       intent.selection.identity !== identity || intent.generation !== generation.current) return;
     detailIntent.current = null;
     const ownsFocus = document.activeElement === intent.source ||
       (!intent.source.isConnected && document.activeElement === document.body);
-    if (current.status !== 'available' || !ownsFocus) return;
+    if (!ownsFocus) return;
+    if (error) {
+      if (intent.focus && !intent.source.isConnected) retryButton.current?.focus({ preventScroll: true });
+      return;
+    }
+    if (current?.status !== 'available') return;
     if (intent.focus) detailHeading.current?.focus({ preventScroll: true });
     detailHeading.current?.scrollIntoView?.({ block: 'start' });
-  }, [current, currentSelection, disabled, ready, identity]);
+  }, [current, error, currentSelection, disabled, ready, identity]);
 
   function showSelection(next: Selection, event: MouseEvent<HTMLButtonElement>) {
     detailIntent.current = { selection: next, source: event.currentTarget,
@@ -129,7 +136,10 @@ export function ClassificationChanges({ quality, disabled }: { quality: Classifi
       </select></label>
       {disabled ? <p role="status">父分类记录正在更新，变动明细暂停显示。</p>
         : !ready ? <p role="status">草稿当前不可用于逐曲核对，请刷新分类记录后检查。</p>
-          : error ? <div role="alert"><p>{error}</p><button className="classification-inline" onClick={() => setRetry((v) => v + 1)}>重试读取变动</button></div>
+          : error ? <div role="alert"><p>{error}</p><button ref={retryButton} className="classification-inline" onClick={(event) => {
+            showSelection(currentSelection, event);
+            setRetry((v) => v + 1);
+          }}>重试读取变动</button></div>
             : !current ? <p role="status">正在读取歌单变动…</p>
               : current.status !== 'available' ? <p role="status">本地修正变动资料不可用，请刷新分类记录后重新核对。</p>
                 : <>

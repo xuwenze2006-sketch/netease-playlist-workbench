@@ -410,6 +410,101 @@ class QualityDraftHttpTests(unittest.TestCase):
         body['source_version'] = '0' * 64
         self.assertEqual(self.post(body)[0], 409)
 
+    def test_replaced_track_returns_source_conflict_and_preserves_old_draft(self):
+        f = self.fixture
+        body = self.request(f.view())
+        self.assertEqual(self.post(body)[0], 200)
+        body['revision'] = 1
+        draft = f.project / '.organizer' / 'classification-draft.json'
+        saved = draft.read_bytes()
+        old_id, replacement = f.plan['source_track_ids'][0], 'F' * 32
+        f.plan['source_track_ids'][0] = replacement
+        for job in f.plan['jobs']:
+            job['candidate_track_ids'] = [replacement if ident == old_id else ident
+                                          for ident in job['candidate_track_ids']]
+        f.write(fixtures.PLAN, f.plan, 112)
+        current = f.view()
+        self.assertEqual(current['status'], 'available')
+        self.assertNotEqual(current['quality']['source_version'], body['source_version'])
+        self.assertNotIn(body['record_key'], [row['record_key'] for row in current['records']])
+        sources = {path.name: path.read_bytes() for path in (f.project / 'artifacts').iterdir()}
+        remove = {key: body[key] for key in ('source_version', 'revision', 'record_key')}
+        remove['action'] = 'remove'
+        for request in (body, remove):
+            with self.subTest(action=request['action']):
+                self.assertEqual(self.post(request)[0], 409)
+                self.assertEqual(draft.read_bytes(), saved)
+        for request in ({**body, 'reason': ''}, {**remove, 'reason': 'unexpected'},
+                        {**body, 'source_version': current['quality']['source_version'],
+                         'record_key': '3' * 32},
+                        {**remove, 'source_version': current['quality']['source_version'],
+                         'record_key': '3' * 32}):
+            with self.subTest(invalid=request):
+                self.assertEqual(self.post(request)[0], 400)
+                self.assertEqual(draft.read_bytes(), saved)
+        self.assertEqual(sources, {path.name: path.read_bytes() for path in (f.project / 'artifacts').iterdir()})
+        self.assertEqual(self.controller.calls, [('doctor', {})])
+
+    def test_damaged_source_returns_503_and_preserves_saved_draft(self):
+        body = self.request(self.fixture.view())
+        self.assertEqual(self.post(body)[0], 200)
+        body['revision'] = 1
+        draft = self.fixture.project / '.organizer' / 'classification-draft.json'
+        saved = draft.read_bytes()
+        source = self.fixture.project / 'artifacts' / fixtures.REPORT
+        for damaged in (b'{', b'{}'):
+            with self.subTest(source=damaged):
+                source.write_bytes(damaged)
+                status, result = self.post(body)
+                self.assertEqual(status, 503)
+                self.assertFalse(result['accepted'])
+                self.assertEqual(draft.read_bytes(), saved)
+                self.assertEqual(source.read_bytes(), damaged)
+        self.assertEqual(self.controller.calls, [('doctor', {})])
+
+    def test_unreadable_source_returns_503_without_echoing_file_error(self):
+        body = self.request(self.fixture.view())
+        self.assertEqual(self.post(body)[0], 200)
+        body['revision'] = 1
+        draft = self.fixture.project / '.organizer' / 'classification-draft.json'
+        saved = draft.read_bytes()
+        source = self.fixture.project / 'artifacts' / fixtures.REPORT
+        original = Path.open
+
+        def unreadable(path, *args, **kwargs):
+            if path == source and args == ('rb',):
+                raise PermissionError('PRIVATE-local-source-path')
+            return original(path, *args, **kwargs)
+
+        with patch.object(Path, 'open', unreadable):
+            status, result = self.post(body)
+        self.assertEqual(status, 503)
+        self.assertFalse(result['accepted'])
+        self.assertNotIn('PRIVATE', json.dumps(result))
+        self.assertEqual(draft.read_bytes(), saved)
+        self.assertEqual(self.controller.calls, [('doctor', {})])
+
+    def test_missing_plan_or_report_returns_503_and_preserves_saved_draft(self):
+        body = self.request(self.fixture.view())
+        self.assertEqual(self.post(body)[0], 200)
+        body['revision'] = 1
+        draft = self.fixture.project / '.organizer' / 'classification-draft.json'
+        saved = draft.read_bytes()
+        for filename in (fixtures.PLAN, fixtures.REPORT):
+            with self.subTest(source=filename):
+                source = self.fixture.project / 'artifacts' / filename
+                content = source.read_bytes()
+                source.unlink()
+                try:
+                    status, result = self.post(body)
+                    self.assertEqual(status, 503)
+                    self.assertFalse(result['accepted'])
+                    self.assertEqual(draft.read_bytes(), saved)
+                    self.assertFalse(source.exists())
+                finally:
+                    source.write_bytes(content)
+        self.assertEqual(self.controller.calls, [('doctor', {})])
+
     def test_session_origin_and_payload_rejected(self):
         body = self.request(self.fixture.view())
         self.assertEqual(self.post(body, {'Origin': 'https://foreign.example'})[0], 403)

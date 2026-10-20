@@ -322,15 +322,15 @@ def _request(request, source_version, records):
     _hash(request['source_version'], _HEX64)
     _revision(request['revision'])
     key = _hash(request['record_key'], _HEX32)
-    if key not in records:
-        _fail()
     edit = None
     if request['action'] == 'save':
-        edit = {'before': copy.deepcopy(records[key]), 'after': _labels(request, exact=False),
+        edit = {'after': _labels(request, exact=False),
                 'reason': _text(request['reason']), 'recording_note': _text(request['recording_note'], empty=True)}
     if request['source_version'] != source_version:
         raise DraftConflict('分类来源已更新，请重新载入后修正。')
-    return edit
+    if key not in records:
+        _fail()
+    return {'before': copy.deepcopy(records[key]), **edit} if edit is not None else None
 
 
 def _write(project, raw, signature):

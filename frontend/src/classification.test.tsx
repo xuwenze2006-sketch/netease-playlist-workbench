@@ -604,6 +604,42 @@ describe('local classification results', () => {
     expect(document.body.textContent).not.toContain('SECRET');
   });
 
+  it.each([0, 7])('keeps keyboard paging focused on results after recovering a reduced %i-song source', async (total) => {
+    await open();
+    const heading = screen.getByRole('heading', { name: '逐曲分类结果' });
+    const scroll = vi.fn(); heading.scrollIntoView = scroll;
+    vi.mocked(fetchClassification)
+      .mockResolvedValueOnce(page(50, total))
+      .mockResolvedValueOnce(page(0, total));
+    screen.getByRole('button', { name: '下一页' }).focus();
+    await click('下一页');
+    expect(screen.getByText('第 1 页，共 1 页')).toBeTruthy();
+    expect(screen.getByText('记录数量已变化，已返回第 1 页。')).toBeTruthy();
+    expect(document.activeElement).toBe(heading);
+    expect(scroll).toHaveBeenCalledOnce();
+  });
+
+  it.each(['focus', 'wheel', 'pointer'])('does not restore recovered page focus after later user %s', async (movement) => {
+    await open();
+    const heading = screen.getByRole('heading', { name: '逐曲分类结果' });
+    const scroll = vi.fn(); heading.scrollIntoView = scroll;
+    let resolve!: (value: ClassificationPage) => void;
+    vi.mocked(fetchClassification)
+      .mockResolvedValueOnce(page(50, 7))
+      .mockReturnValueOnce(new Promise((done) => { resolve = done; }));
+    screen.getByRole('button', { name: '下一页' }).focus();
+    await click('下一页');
+    expect(vi.mocked(fetchClassification).mock.lastCall?.[1].offset).toBe(0);
+    if (movement === 'focus') screen.getByRole('textbox', { name: '搜索歌曲或歌手' }).focus();
+    else if (movement === 'wheel') fireEvent.wheel(document.body);
+    else fireEvent.pointerDown(document.body);
+    const focused = document.activeElement;
+    await act(async () => { resolve(page(0, 7)); });
+    expect(screen.getByText('第 1 页，共 1 页')).toBeTruthy();
+    expect(document.activeElement).toBe(focused);
+    expect(scroll).not.toHaveBeenCalled();
+  });
+
   it('preserves an old result with a safe stale warning after a refresh failure and retries without clearing filters', async () => {
     await open();
     await click('下一页');
@@ -677,6 +713,29 @@ describe('local classification results', () => {
     expect(document.activeElement).toBe(search);
     expect(screen.queryByText('分类歌曲 51')).toBeNull();
   });
+
+  it.each(['wheel', 'pointer', 'touch', 'PageDown', 'Spacebar'])(
+    'does not reclaim page focus or scroll after the user continues browsing with %s',
+    async (interaction) => {
+      await open();
+      const heading = screen.getByRole('heading', { name: '逐曲分类结果' });
+      const scroll = vi.fn();
+      heading.scrollIntoView = scroll;
+      let resolve!: (value: ClassificationPage) => void;
+      vi.mocked(fetchClassification).mockReturnValueOnce(new Promise((done) => { resolve = done; }));
+      screen.getByRole('button', { name: '下一页' }).focus();
+      await click('下一页');
+      if (interaction === 'wheel') fireEvent.wheel(document.body);
+      else if (interaction === 'pointer') fireEvent.pointerDown(document.body);
+      else if (interaction === 'touch') fireEvent.touchStart(document.body);
+      else fireEvent.keyDown(document.body, { key: interaction });
+      const focused = document.activeElement;
+      await act(async () => { resolve(page(50)); });
+      expect(screen.getByText('分类歌曲 51')).toBeTruthy();
+      expect(document.activeElement).toBe(focused);
+      expect(scroll).not.toHaveBeenCalled();
+    },
+  );
 
   it.each(['tab', 'navigation'])(
     'cancels pending page focus and scrolling after %s changes',

@@ -103,9 +103,12 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
           selection.offset > 0 &&
           selection.offset >= result.pagination.total
         ) {
-          pageIntent.current = null;
+          const firstPage = { ...selection, offset: 0 };
+          if (pageIntent.current?.selection === selection) {
+            pageIntent.current = { ...pageIntent.current, selection: firstPage, generation: null };
+          }
           setPageNotice('记录数量已变化，已返回第 1 页。');
-          setSelection((value) => ({ ...value, offset: 0 }));
+          setSelection(firstPage);
           return;
         }
         const identity = result.quality ? `${result.quality.source_version}:${result.quality.revision}` : '';
@@ -140,22 +143,25 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
         pageIntent.current = null;
       if (saveIntent.current && event.target !== saveIntent.current.source) saveIntent.current = null;
     };
-    const cancelSaveOnPointer = (event: PointerEvent) => {
+    const cancelOnPointer = (event: PointerEvent) => {
+      if (pageIntent.current && !pageIntent.current.source.contains(event.target as Node)) pageIntent.current = null;
       if (saveIntent.current && !saveIntent.current.source.contains(event.target as Node)) saveIntent.current = null;
     };
-    const cancelSaveOnWheel = () => { saveIntent.current = null; };
-    const cancelSaveOnKey = (event: globalThis.KeyboardEvent) => {
-      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) saveIntent.current = null;
+    const cancelOnScroll = () => { pageIntent.current = null; saveIntent.current = null; };
+    const cancelOnScrollKey = (event: globalThis.KeyboardEvent) => {
+      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'Home', 'End', ' ', 'Spacebar'].includes(event.key)) cancelOnScroll();
     };
     document.addEventListener('focusin', cancelOnMove);
-    document.addEventListener('pointerdown', cancelSaveOnPointer);
-    document.addEventListener('wheel', cancelSaveOnWheel, { passive: true });
-    document.addEventListener('keydown', cancelSaveOnKey);
+    document.addEventListener('pointerdown', cancelOnPointer);
+    document.addEventListener('wheel', cancelOnScroll, { passive: true });
+    document.addEventListener('touchstart', cancelOnScroll, { passive: true });
+    document.addEventListener('keydown', cancelOnScrollKey);
     return () => {
       document.removeEventListener('focusin', cancelOnMove);
-      document.removeEventListener('pointerdown', cancelSaveOnPointer);
-      document.removeEventListener('wheel', cancelSaveOnWheel);
-      document.removeEventListener('keydown', cancelSaveOnKey);
+      document.removeEventListener('pointerdown', cancelOnPointer);
+      document.removeEventListener('wheel', cancelOnScroll);
+      document.removeEventListener('touchstart', cancelOnScroll);
+      document.removeEventListener('keydown', cancelOnScrollKey);
       pageIntent.current = null;
       saveIntent.current = null;
     };

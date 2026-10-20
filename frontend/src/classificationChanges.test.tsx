@@ -141,6 +141,112 @@ describe('lazy classification playlist changes', () => {
     expect(document.activeElement).toBe(open); expect(scroll).not.toHaveBeenCalled();
   });
 
+  it('returns keyboard paging to retry after a delayed failure without showing the old page', async () => {
+    render(<ClassificationChanges quality={quality} disabled={false} />);
+    fireEvent.click(screen.getByRole('button', { name: '逐曲核对语言 · 英语' }));
+    await screen.findByText('待核对歌曲 1');
+    let reject!: (cause: Error) => void;
+    vi.mocked(fetchClassificationChanges).mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail; }));
+    const next = screen.getByRole('button', { name: '下一页变动' });
+    next.focus(); fireEvent.click(next, { detail: 0 });
+    expect(screen.queryByText('待核对歌曲 1')).toBeNull();
+    await act(async () => { reject(new Error('变动读取失败')); });
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: '重试读取变动' }));
+    expect(screen.queryByText('待核对歌曲 1')).toBeNull();
+  });
+
+  it('returns a successful keyboard retry to the detail heading', async () => {
+    vi.mocked(fetchClassificationChanges).mockRejectedValueOnce(new Error('变动读取失败'));
+    render(<ClassificationChanges quality={quality} disabled={false} />);
+    fireEvent.click(screen.getByRole('button', { name: '逐曲核对语言 · 英语' }));
+    const retry = await screen.findByRole('button', { name: '重试读取变动' });
+    let complete!: (value: ClassificationChangesPage) => void;
+    vi.mocked(fetchClassificationChanges).mockImplementationOnce(() => new Promise((resolve) => { complete = resolve; }));
+    const heading = screen.getByRole('heading', { name: '语言 · 英语 · 逐曲变动' });
+    const scroll = vi.fn(); heading.scrollIntoView = scroll;
+    retry.focus(); fireEvent.click(retry, { detail: 0 });
+    await act(async () => { complete(page()); });
+    expect(screen.getByText('待核对歌曲 1')).toBeTruthy();
+    expect(document.activeElement).toBe(heading);
+    expect(scroll).toHaveBeenCalledWith({ block: 'start' });
+  });
+
+  it('keeps a failed keyboard retry reachable after its initiating button is replaced', async () => {
+    vi.mocked(fetchClassificationChanges).mockRejectedValueOnce(new Error('首次读取失败'));
+    render(<ClassificationChanges quality={quality} disabled={false} />);
+    fireEvent.click(screen.getByRole('button', { name: '逐曲核对语言 · 英语' }));
+    const retry = await screen.findByRole('button', { name: '重试读取变动' });
+    let reject!: (cause: Error) => void;
+    vi.mocked(fetchClassificationChanges).mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail; }));
+    retry.focus(); fireEvent.click(retry, { detail: 0 });
+    await act(async () => { reject(new Error('再次读取失败')); });
+    expect(screen.getByRole('alert').textContent).toContain('再次读取失败');
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: '重试读取变动' }));
+  });
+
+  describe.each(['paging failure', 'retry success'] as const)('%s focus ownership', (phase) => {
+    it.each(['focus-blur', 'pointer', 'wheel', 'scroll-key', 'touch'] as const)(
+      'does not restore focus after user %s while the request is pending', async (movement) => {
+        if (phase === 'retry success') vi.mocked(fetchClassificationChanges).mockRejectedValueOnce(new Error('首次读取失败'));
+        render(<><button>其他操作</button><p>其他内容</p><ClassificationChanges quality={quality} disabled={false} /></>);
+        fireEvent.click(screen.getByRole('button', { name: '逐曲核对语言 · 英语' }));
+        const source = await screen.findByRole('button', { name: phase === 'paging failure' ? '下一页变动' : '重试读取变动' });
+        let complete!: (value: ClassificationChangesPage) => void, reject!: (cause: Error) => void;
+        vi.mocked(fetchClassificationChanges).mockImplementationOnce(() => new Promise((resolve, fail) => { complete = resolve; reject = fail; }));
+        const heading = screen.getByRole('heading', { name: '语言 · 英语 · 逐曲变动' });
+        const focus = vi.spyOn(heading, 'focus'), scroll = vi.fn(); heading.scrollIntoView = scroll;
+        source.focus(); fireEvent.click(source, { detail: 0 });
+        expect(document.activeElement).toBe(document.body);
+        if (movement === 'focus-blur') {
+          const other = screen.getByRole('button', { name: '其他操作' }); other.focus(); other.blur();
+        } else if (movement === 'pointer') fireEvent.pointerDown(screen.getByText('其他内容'));
+        else if (movement === 'wheel') fireEvent.wheel(document, { deltaY: 100 });
+        else if (movement === 'scroll-key') fireEvent.keyDown(document.body, { key: 'PageDown' });
+        else fireEvent.touchStart(screen.getByText('其他内容'));
+        await act(async () => {
+          if (phase === 'paging failure') reject(new Error('变动读取失败'));
+          else complete(page());
+        });
+        expect(document.activeElement).toBe(document.body);
+        expect(focus).not.toHaveBeenCalled(); expect(scroll).not.toHaveBeenCalled();
+      },
+    );
+
+    it('does not turn pointer activation into keyboard focus recovery', async () => {
+      if (phase === 'retry success') vi.mocked(fetchClassificationChanges).mockRejectedValueOnce(new Error('首次读取失败'));
+      render(<ClassificationChanges quality={quality} disabled={false} />);
+      fireEvent.click(screen.getByRole('button', { name: '逐曲核对语言 · 英语' }));
+      const source = await screen.findByRole('button', { name: phase === 'paging failure' ? '下一页变动' : '重试读取变动' });
+      let complete!: (value: ClassificationChangesPage) => void, reject!: (cause: Error) => void;
+      vi.mocked(fetchClassificationChanges).mockImplementationOnce(() => new Promise((resolve, fail) => { complete = resolve; reject = fail; }));
+      source.focus(); fireEvent.click(source, { detail: 1 });
+      await act(async () => {
+        if (phase === 'paging failure') reject(new Error('变动读取失败'));
+        else complete(page());
+      });
+      expect(document.activeElement).toBe(document.body);
+    });
+  });
+
+  it.each(['source', 'revision', 'disabled'] as const)('ignores a pending retry after parent %s changes', async (kind) => {
+    vi.mocked(fetchClassificationChanges).mockRejectedValueOnce(new Error('首次读取失败'));
+    const view = render(<ClassificationChanges quality={quality} disabled={false} />);
+    fireEvent.click(screen.getByRole('button', { name: '逐曲核对语言 · 英语' }));
+    const retry = await screen.findByRole('button', { name: '重试读取变动' });
+    let complete!: (value: ClassificationChangesPage) => void;
+    vi.mocked(fetchClassificationChanges).mockImplementationOnce(() => new Promise((resolve) => { complete = resolve; }));
+    const heading = screen.getByRole('heading', { name: '语言 · 英语 · 逐曲变动' });
+    const focus = vi.spyOn(heading, 'focus'), scroll = vi.fn(); heading.scrollIntoView = scroll;
+    retry.focus(); fireEvent.click(retry, { detail: 0 });
+    const signal = vi.mocked(fetchClassificationChanges).mock.lastCall?.[2];
+    const changed = { ...quality, ...(kind === 'source' ? { source_version: 'c'.repeat(64) } : kind === 'revision' ? { revision: 3 } : {}) };
+    view.rerender(<ClassificationChanges quality={changed} disabled={kind === 'disabled'} />);
+    expect(signal?.aborted).toBe(true);
+    await act(async () => { complete(page()); });
+    expect(screen.queryByText('待核对歌曲 1')).toBeNull();
+    expect(focus).not.toHaveBeenCalled(); expect(scroll).not.toHaveBeenCalled();
+  });
+
   it.each(['source', 'revision', 'disabled'] as const)('does not focus a late result after parent %s changes', async (kind) => {
     let complete!: (value: ClassificationChangesPage) => void;
     vi.mocked(fetchClassificationChanges).mockImplementationOnce(() => new Promise((resolve) => { complete = resolve; }));
