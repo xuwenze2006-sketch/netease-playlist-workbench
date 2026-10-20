@@ -8,8 +8,10 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from netease_organizer.classification_quality import review_reasons, select_pilot, version_hints, diagnostic_strata
+from scripts import audit_classification_quality as audit_script
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -214,7 +216,7 @@ class ClassificationQualityScriptTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         self.source_dir = self.root / "source-artifacts"
         self.source_dir.mkdir()
         self.source = self.source_dir / "全库分类-逐曲结果.json"
@@ -296,6 +298,172 @@ class ClassificationQualityScriptTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(target.read_bytes(), b"existing personal draft")
                 self.assertEqual(list(output.iterdir()), [target])
+
+    def test_second_output_creation_failure_leaves_directory_retryable(self):
+        before = self.source.read_bytes()
+        original_open = Path.open
+        failure = PermissionError('temporary second output failure')
+
+        def fail_second(path, *args, **kwargs):
+            if path == self.output / 'pilot-review.json' and args == ('xb',):
+                raise failure
+            return original_open(path, *args, **kwargs)
+
+        with patch.object(Path, 'open', fail_second):
+            with self.assertRaises(PermissionError) as caught:
+                audit_script.audit(self.source, self.output)
+        self.assertIs(caught.exception, failure)
+        self.assertEqual(list(self.output.iterdir()), [])
+        self.assertEqual(self.source.read_bytes(), before)
+        self.assertEqual(audit_script.audit(self.source, self.output)['pilot_count'], 5)
+
+    def test_partial_write_or_flush_failure_removes_both_owned_outputs_for_retry(self):
+        original_open = Path.open
+        for stage in ('write', 'flush', 'close'):
+            with self.subTest(stage=stage):
+                output = self.root / ('failed-' + stage)
+                failure = OSError('temporary ' + stage + ' failure')
+
+                class FailingOutput:
+                    def __init__(self, handle):
+                        self.handle = handle
+
+                    def fileno(self):
+                        return self.handle.fileno()
+
+                    def write(self, payload):
+                        if stage == 'write':
+                            self.handle.write(payload[:20])
+                            raise failure
+                        return self.handle.write(payload)
+
+                    def flush(self):
+                        self.handle.flush()
+                        if stage == 'flush':
+                            raise failure
+
+                    def close(self):
+                        self.handle.close()
+                        if stage == 'close':
+                            raise failure
+
+                def failing_output(path, *args, **kwargs):
+                    handle = original_open(path, *args, **kwargs)
+                    if path == output / 'pilot-review.json' and args == ('xb',):
+                        return FailingOutput(handle)
+                    return handle
+
+                with patch.object(Path, 'open', failing_output):
+                    with self.assertRaises(OSError) as caught:
+                        audit_script.audit(self.source, output)
+                self.assertIs(caught.exception, failure)
+                self.assertEqual(list(output.iterdir()), [])
+                self.assertEqual(audit_script.audit(self.source, output)['pilot_count'], 5)
+
+    def test_failed_reservation_preserves_concurrently_created_second_output(self):
+        original_open = Path.open
+        target = self.output / 'pilot-review.json'
+
+        def competing_output(path, *args, **kwargs):
+            if path == target and args == ('xb',):
+                with original_open(path, 'xb') as handle:
+                    handle.write(b'concurrent reviewed pilot')
+            return original_open(path, *args, **kwargs)
+
+        with patch.object(Path, 'open', competing_output):
+            with self.assertRaises(FileExistsError):
+                audit_script.audit(self.source, self.output)
+        self.assertEqual(list(self.output.iterdir()), [target])
+        self.assertEqual(target.read_bytes(), b'concurrent reviewed pilot')
+
+    def test_failure_cleanup_preserves_replacement_of_first_output(self):
+        original_open = Path.open
+        target = self.output / 'quality-report.json'
+        replacement = self.root / 'replacement.json'
+        replacement.write_bytes(b'concurrent replacement')
+
+        class ReplacedOutput:
+            def __init__(self, handle):
+                self.handle = handle
+
+            def fileno(self):
+                return self.handle.fileno()
+
+            def write(self, payload):
+                return self.handle.write(payload)
+
+            def flush(self):
+                self.handle.flush()
+                self.handle.close()
+                replacement.replace(target)
+                raise OSError('output replaced during failed flush')
+
+            def close(self):
+                self.handle.close()
+
+        def replaced_output(path, *args, **kwargs):
+            handle = original_open(path, *args, **kwargs)
+            return ReplacedOutput(handle) if path == target and args == ('xb',) else handle
+
+        with patch.object(Path, 'open', replaced_output):
+            with self.assertRaises(OSError):
+                audit_script.audit(self.source, self.output)
+        self.assertEqual(target.read_bytes(), b'concurrent replacement')
+        self.assertEqual(list(self.output.iterdir()), [target])
+
+    def test_close_error_during_failure_cleanup_preserves_original_error(self):
+        original_open = Path.open
+        failure = OSError('original write failure')
+
+        class FailingOutput:
+            def __init__(self, handle):
+                self.handle = handle
+
+            def fileno(self):
+                return self.handle.fileno()
+
+            def write(self, payload):
+                self.handle.write(payload[:20])
+                raise failure
+
+            def close(self):
+                self.handle.close()
+                raise OSError('secondary close failure')
+
+        def failing_output(path, *args, **kwargs):
+            handle = original_open(path, *args, **kwargs)
+            if path == self.output / 'quality-report.json' and args == ('xb',):
+                return FailingOutput(handle)
+            return handle
+
+        with patch.object(Path, 'open', failing_output):
+            with self.assertRaises(OSError) as caught:
+                audit_script.audit(self.source, self.output)
+        self.assertIs(caught.exception, failure)
+        self.assertEqual(list(self.output.iterdir()), [])
+
+    def test_unlink_failure_does_not_replace_original_output_error(self):
+        original_open = Path.open
+        original_unlink = Path.unlink
+        target = self.output / 'quality-report.json'
+        failure = PermissionError('original second reservation failure')
+
+        def fail_second(path, *args, **kwargs):
+            if path == self.output / 'pilot-review.json' and args == ('xb',):
+                raise failure
+            return original_open(path, *args, **kwargs)
+
+        def fail_cleanup(path, *args, **kwargs):
+            if path == target:
+                raise PermissionError('secondary cleanup failure')
+            return original_unlink(path, *args, **kwargs)
+
+        with patch.object(Path, 'open', fail_second), patch.object(Path, 'unlink', fail_cleanup):
+            with self.assertRaises(PermissionError) as caught:
+                audit_script.audit(self.source, self.output)
+        self.assertIs(caught.exception, failure)
+        self.assertEqual(list(self.output.iterdir()), [target])
+        self.assertEqual(target.read_bytes(), b'')
 
     def test_source_artifact_directory_is_not_an_output_directory(self):
         before = self.source.read_bytes()

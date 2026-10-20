@@ -63,6 +63,17 @@ function expectOnlyLocalStateReads(fetcher: Awaited<ReturnType<typeof openPlayli
 }
 
 describe('local playlist name search', () => {
+  it('keeps confirmed results while composing and applies the chosen Chinese text', async () => {
+    await openPlaylists();
+    const search = screen.getByRole('textbox', { name: '搜索歌单名称' });
+    fireEvent.compositionStart(search);
+    fireEvent.change(search, { target: { value: 'zhong' } });
+    expect(visibleNames()).toEqual(playlists.map((playlist) => playlist.name));
+    fireEvent.compositionEnd(search, { target: { value: '中文' } });
+    expect(search).toHaveProperty('value', '中文');
+    expect(visibleNames()).toEqual(['中文歌单']);
+  });
+
   it.each([
     [' Ｆｕｎｋ ', ['Funk', 'Ｆｕｎｋ现场']],
     ['Ｔａｙｌｏｒ', ['Taylor Swift · 红心精选']],

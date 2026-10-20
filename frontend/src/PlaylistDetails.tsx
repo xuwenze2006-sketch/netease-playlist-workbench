@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import { fetchLocalTracks, readSession } from './api';
 import { Icon } from './icons';
+import { useSearchInput } from './useSearchInput';
 import type { Job, LocalTrackPage, MetadataFilter, Playlist, PlaylistReadIntent } from './types';
 
 interface Props {
@@ -54,7 +55,7 @@ function DetailsDrawer({
     selection: TrackSelection;
     generation: number | null;
   } | null>(null);
-  const [input, setInput] = useState('');
+  const { value: input, query: committedInput, setValue: setInput, ...searchHandlers } = useSearchInput();
   const [selection, setSelection] = useState<TrackSelection>({
     query: '',
     offset: 0,
@@ -70,7 +71,7 @@ function DetailsDrawer({
   const readAttempt = useRef<{ before: number | null; sequence: number | null } | null>(null);
   const refreshedJob = useRef('');
   const headingId = useId();
-  const searching = input.trim() !== selection.query;
+  const searching = committedInput.trim() !== selection.query;
   const waiting = loading || searching;
 
   function restoreFocus() {
@@ -147,14 +148,14 @@ function DetailsDrawer({
   }, []);
 
   useEffect(() => {
-    const next = input.trim();
+    const next = committedInput.trim();
     if (next === selection.query) return;
     const timer = window.setTimeout(
       () => setSelection((value) => ({ ...value, query: next, offset: 0 })),
       200,
     );
     return () => window.clearTimeout(timer);
-  }, [input, selection.query]);
+  }, [committedInput, selection.query]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -478,6 +479,7 @@ function DetailsDrawer({
           <label className="details-search">
             <Icon name="search" size={19} />
             <input
+              {...searchHandlers}
               ref={searchInput}
               type="text"
               aria-label="搜索曲名或歌手"
@@ -487,7 +489,7 @@ function DetailsDrawer({
               onChange={(event) => {
                 paginationFocus.current = null;
                 setPageNotice('');
-                setInput(event.target.value);
+                searchHandlers.onChange(event);
               }}
             />
             {input && (

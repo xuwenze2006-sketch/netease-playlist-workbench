@@ -25,6 +25,7 @@ import { DiagnosticNotice, needsWriteInspection, recordNotSaved } from './Diagno
 import { RecoveryNotice } from './RecoveryNotice';
 import { PlaylistDetails } from './PlaylistDetails';
 import { ClassificationPanel } from './ClassificationPanel';
+import { useSearchInput } from './useSearchInput';
 import type { IconName } from './icons';
 
 type Page = 'overview' | 'playlists' | 'classification' | 'history' | 'settings';
@@ -367,7 +368,7 @@ export default function App() {
   );
   const [inspectionJob, setInspectionJob] = useState<Job | null>(null);
   const [previewMode, setPreviewMode] = useState<'names' | 'full'>('names');
-  const [query, setQuery] = useState('');
+  const { value: query, query: committedQuery, setValue: setQuery, ...queryHandlers } = useSearchInput();
   const [category, setCategory] = useState<'all' | Category>('all');
   const [selectedPlaylist, setSelectedPlaylist] = useState<Playlist | null>(null);
   const [playlistReadIntent, setPlaylistReadIntent] = useState<PlaylistReadIntent | null>(null);
@@ -463,7 +464,7 @@ export default function App() {
     message.startsWith('页面会话已更新'),
   );
   // Final sigma must share sigma's search form regardless of its word position.
-  const queryKey = query.normalize('NFKC').trim().toLocaleLowerCase().replace(/ς/g, 'σ');
+  const queryKey = committedQuery.normalize('NFKC').trim().toLocaleLowerCase().replace(/ς/g, 'σ');
   const filtered = playlists.filter(
     (playlist) =>
       (category === 'all' || playlist.category === category) &&
@@ -748,6 +749,14 @@ export default function App() {
     actionGeneration.current += 1;
     cancelStateRead();
     const job = stateRef.current?.job;
+    const pauseGeneration = actionGeneration.current;
+    const pauseJobId = job?.id ?? null;
+    const ownsPause = () => {
+      const currentJob = stateRef.current?.job;
+      return actionGeneration.current === pauseGeneration &&
+        (currentJob?.id ?? null) === pauseJobId &&
+        (waitingOnly || (!!currentJob && ACTIVE.has(currentJob.status)));
+    };
     actionIntentJob.current =
       job && ACTIVE.has(job.status)
         ? { id: job.id, action: job.action, generation: actionGeneration.current }
@@ -755,9 +764,11 @@ export default function App() {
     setPauseRequested(true);
     try {
       await pauseJob(session.current);
+      if (!ownsPause()) return;
       setNotice(waitingOnly ? '已停止等待扫码。' : '已请求暂停，当前请求完成并核对后停止。');
       await refreshState();
     } catch (cause) {
+      if (!ownsPause()) return;
       setPauseRequested(false);
       setError(
         cause instanceof LocalApiError ? cause.message : '暂停请求未确认，请查看当前任务状态。',
@@ -1437,7 +1448,7 @@ export default function App() {
                   <input
                     ref={searchInput}
                     value={query}
-                    onChange={(event) => setQuery(event.target.value)}
+                    {...queryHandlers}
                     placeholder="搜索歌单名称"
                     aria-label="搜索歌单名称"
                   />

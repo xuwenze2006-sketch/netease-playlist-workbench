@@ -200,6 +200,24 @@ describe('local classification results', () => {
     });
   });
 
+  it('does not search unfinished IME candidates and debounces only the committed text', async () => {
+    vi.useFakeTimers();
+    await open();
+    const before = vi.mocked(fetchClassification).mock.calls.length;
+    const search = screen.getByRole('textbox', { name: '搜索歌曲或歌手' });
+    fireEvent.compositionStart(search);
+    fireEvent.change(search, { target: { value: 'zhong' } });
+    await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+    expect(vi.mocked(fetchClassification)).toHaveBeenCalledTimes(before);
+    expect(screen.getByText('分类歌曲 1')).toBeTruthy();
+    fireEvent.compositionEnd(search, { target: { value: '中文' } });
+    await act(async () => { await vi.advanceTimersByTimeAsync(199); });
+    expect(vi.mocked(fetchClassification)).toHaveBeenCalledTimes(before);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(vi.mocked(fetchClassification)).toHaveBeenCalledTimes(before + 1);
+    expect(vi.mocked(fetchClassification).mock.lastCall?.[1]).toMatchObject({ query: '中文', offset: 0 });
+  });
+
   it('debounces song and artist search and resets a later page to the first page', async () => {
     vi.useFakeTimers();
     await open();

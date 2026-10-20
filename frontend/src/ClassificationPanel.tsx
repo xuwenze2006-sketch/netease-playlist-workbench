@@ -5,6 +5,7 @@ import { ClassificationEditor, ClassificationQualitySummary } from './Classifica
 import type { ClassificationEditSession } from './ClassificationEditor';
 import { REVIEW_LABELS } from './classificationQuality';
 import { Icon } from './icons';
+import { useSearchInput } from './useSearchInput';
 import type { ClassificationDimension, ClassificationDraftRequest, ClassificationPage } from './types';
 import './classification.css';
 
@@ -22,7 +23,7 @@ function dateText(value: string | null) {
 }
 
 export function ClassificationPanel({ active = true }: { active?: boolean }) {
-  const [input, setInput] = useState('');
+  const { value: input, query: committedInput, setValue: setInput, ...searchHandlers } = useSearchInput();
   const [selection, setSelection] = useState<Selection>(INITIAL);
   const [view, setView] = useState<View>('songs');
   const [saved, setSaved] = useState<{ page: ClassificationPage; selection: Selection } | null>(
@@ -55,7 +56,7 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
     generation: number | null;
   } | null>(null);
   const id = useId();
-  const searching = input.trim() !== selection.query;
+  const searching = committedInput.trim() !== selection.query;
   const waiting = loading || searching;
   const data = saved?.page ?? null;
   const currentData = saved?.selection === selection ? data : null;
@@ -72,14 +73,14 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
       saveIntent.current = null;
       return;
     }
-    const query = input.trim();
+    const query = committedInput.trim();
     if (query === selection.query) return;
     const timer = window.setTimeout(
       () => setSelection((value) => ({ ...value, query, offset: 0 })),
       200,
     );
     return () => window.clearTimeout(timer);
-  }, [active, input, selection.query]);
+  }, [active, committedInput, selection.query]);
 
   useEffect(() => {
     if (!active || searching) return;
@@ -215,7 +216,7 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
     pageIntent.current = null;
     refreshRequested.current = false;
     setPageNotice('');
-    setSelection((value) => ({ ...value, ...change, query: input.trim(), offset: 0 }));
+    setSelection((value) => ({ ...value, ...change, query: committedInput.trim(), offset: 0 }));
   }
   function clear(pending = false, basis?: Selection['basis']) {
     pageIntent.current = null;
@@ -485,6 +486,7 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
             <label className="classification-search">
               <Icon name="search" size={17} />
               <input
+                {...searchHandlers}
                 ref={searchInput}
                 aria-label="搜索歌曲或歌手"
                 placeholder="搜索歌曲或歌手"
@@ -492,7 +494,7 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
                 value={input}
                 onChange={(event) => {
                   pageIntent.current = null;
-                  setInput(event.target.value);
+                  searchHandlers.onChange(event);
                 }}
               />
               {input && (

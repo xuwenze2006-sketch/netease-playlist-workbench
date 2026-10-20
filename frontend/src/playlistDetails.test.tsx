@@ -220,6 +220,28 @@ describe('saved playlist details drawer', () => {
       expect(screen.queryByText(/SECRET/)).toBeNull();
     },
   );
+  it('keeps the current page during IME composition and searches only the chosen text', async () => {
+    const fetcher = route();
+    vi.stubGlobal('fetch', fetcher);
+    render(<PlaylistDetails playlist={liked} onClose={() => {}} />);
+    await screen.findByRole('table');
+    fireEvent.click(screen.getByRole('button', { name: '下一页' }));
+    await screen.findByText('歌曲 51');
+    vi.useFakeTimers();
+    const search = screen.getByRole('textbox', { name: '搜索曲名或歌手' });
+    fireEvent.compositionStart(search);
+    fireEvent.change(search, { target: { value: 'lin' } });
+    await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(screen.getByText('歌曲 51')).toBeTruthy();
+    fireEvent.compositionEnd(search, { target: { value: '林' } });
+    await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    const request = new URL(fetcher.mock.calls[2][0], 'http://localhost');
+    expect(request.searchParams.get('q')).toBe('林');
+    expect(request.searchParams.get('offset')).toBe('0');
+  });
+
   it('debounces search, retains matched original positions and resets pagination', async () => {
     const fetcher = route();
     vi.stubGlobal('fetch', fetcher);

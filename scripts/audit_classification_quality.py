@@ -8,6 +8,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import sys
 from collections import Counter
 from datetime import datetime, timezone
@@ -109,6 +110,10 @@ def _summary(records, selected):
     }
 
 
+def _output_identity(info):
+    return info.st_dev, info.st_ino, info.st_mode
+
+
 def audit(source, output_dir, limit=50):
     """Create both drafts exclusively, after validating source and destinations."""
     source = Path(source).resolve()
@@ -182,15 +187,34 @@ def audit(source, output_dir, limit=50):
     output_dir.mkdir(parents=True, exist_ok=True)
     # Reserve both files before writing. Exclusive creation also covers races.
     handles = []
+    created = []
     try:
         for target in targets:
-            handles.append(target.open("xb"))
+            handle = target.open("xb")
+            handles.append(handle)
+            created.append((target, _output_identity(os.fstat(handle.fileno()))))
         for handle, payload in zip(handles, payloads):
             handle.write(payload)
             handle.flush()
-    finally:
         for handle in handles:
             handle.close()
+    except BaseException:
+        # Close every handle even if a flush/close also fails. Keep the original
+        # error, and remove only files exclusively created by this attempt.
+        for handle in handles:
+            try:
+                handle.close()
+            except OSError:
+                pass
+        for target, identity in created:
+            try:
+                # Best effort identity check, not an atomic conditional unlink:
+                # a continuously racing external writer still requires isolation.
+                if _output_identity(target.lstat()) == identity:
+                    target.unlink()
+            except OSError:
+                pass
+        raise
     return summary
 
 
