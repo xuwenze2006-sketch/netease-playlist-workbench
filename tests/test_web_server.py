@@ -166,6 +166,69 @@ class WebServerTests(unittest.TestCase):
         status, _, response = self.request("POST", "/api/actions", body)
         return status, json.loads(response)
 
+    def probe_payload(self):
+        return {"expected_job_id": (self.server.application.job or {}).get("id", "a" * 24)}
+
+    def test_delayed_probe_cannot_replace_a_newer_completed_job(self):
+        self.assertEqual(self.submit("login")[0], 202)
+        self.assertTrue(self.server.application.wait_for_idle(1))
+        body = json.dumps({"action": "authorization_probe", "payload": self.probe_payload()}).encode()
+        delayed = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
+        try:
+            delayed.putrequest("POST", "/api/actions")
+            for name, value in {"Origin": self.origin, "X-Organizer-Session": self.token,
+                                "Content-Type": "application/json", "Content-Length": str(len(body))}.items():
+                delayed.putheader(name, value)
+            delayed.endheaders()
+            self.assertEqual(self.submit("check")[0], 202)
+            self.assertTrue(self.server.application.wait_for_idle(1))
+            before = self.server.application.state()
+            calls = copy.deepcopy(self.controller.calls)
+            started = self.server.application.started
+            login_started = self.server.application.login_started
+            pause_requested = self.server.application.pause_requested
+            prepared = list(self.controller.prepared)
+            delayed.send(body)
+            reply = delayed.getresponse()
+            result = json.loads(reply.read())
+            self.assertEqual(reply.status, 409)
+            self.assertFalse(result["accepted"])
+            self.assertEqual(self.server.application.state(), before)
+            self.assertEqual(self.controller.calls, calls)
+            self.assertEqual(self.server.application.started, started)
+            self.assertEqual(self.server.application.login_started, login_started)
+            self.assertEqual(self.server.application.pause_requested, pause_requested)
+            self.assertEqual(self.controller.prepared, prepared)
+        finally:
+            delayed.close()
+
+    def test_probe_payload_is_required_and_validated_for_http_and_direct_submit(self):
+        self.assertEqual(self.submit("login")[0], 202)
+        self.assertTrue(self.server.application.wait_for_idle(1))
+        application = self.server.application
+        before = application.state()
+        calls = copy.deepcopy(self.controller.calls)
+        invalid = [None, [], {}, {"expected_job_id": None}, {"expected_job_id": 1},
+                   {"expected_job_id": "A" * 24}, {"expected_job_id": "a" * 23},
+                   {"expected_job_id": "a" * 25}, {"expected_job_id": "z" * 24},
+                   {"expected_job_id": "a" * 24 + "\n"},
+                   {"expected_job_id": "a" * 24, "extra": True}]
+        for payload in invalid:
+            with self.subTest(payload=payload):
+                self.assertEqual(self.submit("authorization_probe", payload)[0], 400)
+                self.assertEqual(application.submit("authorization_probe", payload)[0], 400)
+                self.assertEqual(application.state(), before)
+                self.assertEqual(self.controller.calls, calls)
+        status, _, raw = self.request("POST", "/api/actions", {"action": "authorization_probe"})
+        self.assertEqual(status, 400)
+        self.assertFalse(json.loads(raw)["accepted"])
+        self.assertEqual(application.submit("authorization_probe", {"expected_job_id": "0" * 24})[0], 409)
+        self.assertEqual(application.state(), before)
+        self.assertEqual(self.controller.calls, calls)
+        self.assertEqual(self.submit("authorization_probe", self.probe_payload())[0], 202)
+        self.assertTrue(application.wait_for_idle(1))
+        self.assertEqual(self.controller.calls[-1], ("authorization_probe", {}))
+
     def test_initial_page_nonce_and_polling_are_local_cached_only(self):
         self.assertGreaterEqual(len(self.token), 32)
         self.assertNotIn("__ORGANIZER_SESSION__", self.token)
@@ -208,12 +271,12 @@ class WebServerTests(unittest.TestCase):
         self.assertEqual(self.submit('login')[0], 202)
         self.assertTrue(self.server.application.wait_for_idle(1))
         self.request('POST', '/api/pause', {})
-        self.assertEqual(self.submit('authorization_probe')[0], 409)
+        self.assertEqual(self.submit('authorization_probe', self.probe_payload())[0], 409)
         self.assertTrue(self.server.application.pause_requested)
         self.assertFalse(any(action == 'authorization_probe' for action, _ in self.controller.calls))
         self.assertEqual(self.submit('login')[0], 202)
         self.assertTrue(self.server.application.wait_for_idle(1))
-        self.assertEqual(self.submit('authorization_probe')[0], 202)
+        self.assertEqual(self.submit('authorization_probe', self.probe_payload())[0], 202)
         self.assertTrue(self.server.application.wait_for_idle(1))
 
     def test_inflight_login_url_does_not_restart_wait_after_pause(self):
@@ -224,7 +287,7 @@ class WebServerTests(unittest.TestCase):
         self.controller.release.set()
         self.assertTrue(self.server.application.wait_for_idle(1))
         self.assertIsNone(self.server.application.login_started)
-        self.assertEqual(self.submit('authorization_probe')[0], 409)
+        self.assertEqual(self.submit('authorization_probe', self.probe_payload())[0], 409)
 
     def test_health_has_independent_instance_without_session_or_activity_refresh(self):
         application = self.server.application
@@ -574,7 +637,7 @@ class WebServerTests(unittest.TestCase):
         result = self.state()["job"]["result"]
         self.assertNotIn("url", result)
         self.assertNotIn("qr_png_base64", result)
-        self.assertEqual(self.submit("authorization_probe")[0], 409)
+        self.assertEqual(self.submit("authorization_probe", self.probe_payload())[0], 409)
 
         def failing():
             raise RuntimeError(SECRET)
@@ -588,11 +651,11 @@ class WebServerTests(unittest.TestCase):
         self.assertNotIn(SECRET, json.dumps(state))
 
     def test_authorization_probe_requires_login_and_does_not_reset_pause_control(self):
-        self.assertEqual(self.submit("authorization_probe")[0], 409)
+        self.assertEqual(self.submit("authorization_probe", self.probe_payload())[0], 409)
         self.assertEqual(self.submit("login")[0], 202)
         self.assertTrue(self.server.application.wait_for_idle(1))
         prepared = list(self.controller.prepared)
-        self.assertEqual(self.submit("authorization_probe")[0], 202)
+        self.assertEqual(self.submit("authorization_probe", self.probe_payload())[0], 202)
         self.assertTrue(self.server.application.wait_for_idle(1))
         self.assertEqual(self.controller.prepared, prepared)
         self.assertEqual(self.controller.calls[-1], ("authorization_probe", {}))

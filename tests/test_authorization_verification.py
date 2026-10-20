@@ -246,7 +246,9 @@ class AuthorizationHelperTests(unittest.TestCase):
             return json.load(response)
 
     def action(self, opener, url, nonce, action):
-        self.request(opener, url, nonce, 'api/actions', {'action': action, 'payload': {}})
+        payload = ({'expected_job_id': self.request(opener, url, nonce)['job']['id']}
+                   if action == 'authorization_probe' else {})
+        self.request(opener, url, nonce, 'api/actions', {'action': action, 'payload': payload})
         deadline = time.monotonic()+5
         while time.monotonic() < deadline:
             state = self.request(opener, url, nonce)

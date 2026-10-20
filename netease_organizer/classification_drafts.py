@@ -30,6 +30,7 @@ _KIND = 'classification_correction_draft'
 _LOCK = threading.Lock()
 _HEX32 = re.compile(r'[0-9a-fA-F]{32}\Z')
 _HEX64 = re.compile(r'[0-9a-fA-F]{64}\Z')
+_TEXT_CONTROLS = re.compile(r'[\x00-\x09\x0b-\x1f\x7f-\x9f\ud800-\udfff]')
 _LABEL_FIELDS = {'styles', 'scenes', 'language'}
 _EDIT_FIELDS = {'before', 'after', 'reason', 'recording_note'}
 _ROOT_FIELDS = {'kind', 'version', 'source_version', 'revision', 'edits'}
@@ -70,9 +71,7 @@ def _revision(value):
 def _text(value, *, empty=False):
     """Validate evidence text, preserving LF while rejecting other controls."""
     if (type(value) is not str or len(value) > 1000 or not empty and not value.strip()
-            or any((ord(char) < 32 and char != '\n')
-                   or 127 <= ord(char) <= 159 or 0xD800 <= ord(char) <= 0xDFFF
-                   for char in value)):
+            or _TEXT_CONTROLS.search(value) is not None):
         _fail()
     return value
 

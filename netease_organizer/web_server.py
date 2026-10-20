@@ -563,12 +563,15 @@ class WorkbenchApplication:
 
     def submit(self, action, payload, *, session=None):
         with self._records_gate, self.lock:
-            if action == "read_playlist" and _valid_action({"action": action, "payload": payload}) is None:
+            if action in {"read_playlist", "authorization_probe"} and _valid_action({"action": action, "payload": payload}) is None:
                 return 400, {"accepted": False, "message": "本地请求未通过检查。"}
             if self.page_closing or (session is not None and not self.valid_session(session)):
                 return 409, {"accepted": False, "message": "页面会话已结束或更新，请重新加载工作台。"}
             if self.stopping or self.busy:
                 return 409, {"accepted": False, "message": "已有任务正在运行或工作台正在关闭。"}
+            if action == "authorization_probe" and (
+                    self.job is None or self.job["id"] != payload["expected_job_id"]):
+                return 409, {"accepted": False, "message": "任务记录已变化，本次授权检查已跳过。"}
             self._refresh_local_recovery()
             if action in _WRITE_ACTIONS and (self._review_required or (
                     self.job is not None and self.job.get("action") in _WRITE_ACTIONS
@@ -739,6 +742,10 @@ def _valid_action(raw):
             return None
     elif action == "read_playlist":
         if set(payload) != {"key"} or not _playlist_key(payload["key"]):
+            return None
+    elif action == "authorization_probe":
+        if (set(payload) != {"expected_job_id"} or not isinstance(payload["expected_job_id"], str)
+                or re.fullmatch(r"[a-f0-9]{24}", payload["expected_job_id"]) is None):
             return None
     elif payload:
         return None

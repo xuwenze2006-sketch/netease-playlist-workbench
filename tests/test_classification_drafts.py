@@ -103,7 +103,7 @@ class ClassificationDraftTests(unittest.TestCase):
         source.parent.mkdir()
         source.write_bytes(b'UNCHANGED-ORIGINAL-FIXTURE')
         reason = '前奏较平缓\n主体鼓点较密\n'
-        recording_note = '\n专辑原版🎧\n00:30–01:20 人声核对\n'
+        recording_note = '\n专辑原版🎧\n00:30–01:20 人声核对\n\u00a0\ud7ff\ue000\u2028\u2029'
         saved = self.save(reason=reason, recording_note=recording_note)
         self.assertEqual(saved['edits'][self.key]['reason'], reason)
         self.assertEqual(saved['edits'][self.key]['recording_note'], recording_note)
@@ -313,6 +313,7 @@ except drafts.DraftError as error:
             {'reason': 'unsafe\x00text'}, {'recording_note': '\ud800'}, {'recording_note': '\udfff'},
             {'recording_note': '\r'}, {'recording_note': '\t'}, {'recording_note': '\x00'},
             {'recording_note': '\x1f'}, {'recording_note': '\x7f'}, {'recording_note': '\x85'},
+            {'recording_note': '\x0b'}, {'recording_note': '\x0c'}, {'recording_note': '\x9f'},
             {'recording_note': 'a' * 1001},
         ]
         for changes in cases:

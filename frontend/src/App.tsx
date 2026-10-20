@@ -967,10 +967,12 @@ export default function App() {
         (stateRef.current?.job && ACTIVE.has(stateRef.current.job.status))
       )
         return;
+      const expectedJobId = stateRef.current?.job?.id;
+      if (!expectedJobId) return;
       probeInFlight.current = true;
       const generation = actionGeneration.current;
       try {
-        await postAction(session.current, 'authorization_probe');
+        await postAction(session.current, 'authorization_probe', { expected_job_id: expectedJobId });
         if (generation !== actionGeneration.current) return;
         await refreshState();
       } catch {

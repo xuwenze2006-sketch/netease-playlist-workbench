@@ -25,7 +25,7 @@ const completed = {
     result: { status: 'completed' },
   },
 };
-const response = (value: unknown) => ({ ok: true, json: async () => value });
+const response = (value: unknown, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => value });
 const updateButton = () => screen.getByRole<HTMLButtonElement>('button', { name: '更新歌单清单' });
 
 function setup() {
@@ -39,6 +39,56 @@ function setup() {
 }
 
 describe('state polling and accepted task ownership', () => {
+  it.each(['rejected', 'accepted'] as const)('binds an old probe to its dispatch snapshot and ignores its late %s response', async (outcome) => {
+    const fetcher = setup();
+    window.history.replaceState(null, '', '/#settings');
+    const loginId = 'a'.repeat(24), checkId = 'b'.repeat(24);
+    let current = { ...idle, job: null as typeof completed.job | null };
+    let finishProbe!: () => void;
+    let submittedProbe: { action: string; payload: unknown } | null = null;
+    fetcher.mockImplementation(async (url, options) => {
+      if (url === '/api/state') return response(current);
+      const request = JSON.parse(options?.body as string);
+      if (request.action === 'login') {
+        current = { ...idle, job: { ...completed.job, id: loginId, action: 'login',
+          result: { status: 'authorization_pending', url: 'https://163cn.tv/local-probe-fixture' } } } as typeof current;
+        return response({ accepted: true, job_id: loginId });
+      }
+      if (request.action === 'authorization_probe') {
+        submittedProbe = request;
+        // Rejection models a stale request reaching the server after check;
+        // acceptance models a probe processed first whose response was delayed.
+        return await new Promise<ReturnType<typeof response>>((resolve) => {
+          finishProbe = () => resolve(outcome === 'accepted'
+            ? response({ accepted: true, job_id: 'c'.repeat(24) })
+            : response({ accepted: false, message: '旧探针已过期。' }, 409));
+        });
+      }
+      if (request.action === 'check') {
+        current = { ...idle, job: { ...completed.job, id: checkId, action: 'check',
+          result: { status: 'completed', message: '新的接入检查已完成。' } } } as typeof current;
+        return response({ accepted: true, job_id: checkId });
+      }
+      throw new Error('Unexpected fixture action');
+    });
+    await act(async () => { render(<App />); });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '生成扫码授权' })); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(submittedProbe).toEqual({ action: 'authorization_probe', payload: { expected_job_id: loginId } });
+    const check = screen.getByRole<HTMLButtonElement>('button', { name: '检查本地接入' });
+    expect(check.disabled).toBe(false);
+    await act(async () => { fireEvent.click(check); });
+    const notice = screen.getByRole('status').textContent;
+    expect(notice).toBe('新的接入检查已完成。');
+    expect(check.disabled).toBe(false);
+    await act(async () => { finishProbe(); });
+    expect(screen.getByRole('status').textContent).toBe(notice);
+    expect(check.disabled).toBe(false);
+    expect(screen.queryByRole('heading', { name: '任务已接受，正在核对状态' })).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(submittedProbe).toEqual({ action: 'authorization_probe', payload: { expected_job_id: loginId } });
+  });
+
   it.each(['accepted', 'unknown'])('consumes a login result observed before the delayed %s POST response', async (outcome) => {
     const fetcher = setup();
     window.history.replaceState(null, '', '/#settings');
