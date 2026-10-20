@@ -743,6 +743,8 @@ export default function App() {
   );
   const requestPause = async () => {
     if (pauseRequested || (!active && !authorization)) return;
+    setError('');
+    setNotice('');
     const waitingOnly = !!authorization && !active;
     setAuthorization(null);
     loginIntentJob.current = '';

@@ -94,4 +94,40 @@ describe('pause response ownership', () => {
     expect(screen.getByRole<HTMLButtonElement>('button', { name: '暂停任务' }).disabled).toBe(false);
     expect(backend.fetcher.mock.calls.filter(([url]) => url === '/api/pause')).toHaveLength(1);
   });
+
+  it('replaces a previous pause failure while an explicit retry is pending', async () => {
+    const backend = await pendingPause();
+    await backend.settle('failure');
+    expect(screen.getByRole('alert').textContent).toContain('与本机服务的连接中断');
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '暂停任务' })); });
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: '正在暂停…' }).disabled).toBe(true);
+    expect(backend.fetcher.mock.calls.filter(([url]) => url === '/api/pause')).toHaveLength(2);
+  });
+
+  it('shows a successful pause retry instead of its previous failure', async () => {
+    const backend = await pendingPause();
+    await backend.settle('failure');
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '暂停任务' })); });
+    await backend.settle('success');
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByRole('status').textContent).toContain('已请求暂停');
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: '正在暂停…' }).disabled).toBe(true);
+    await backend.publishPaused();
+    expect(screen.getByRole('status').textContent).toBe('旧读取任务已暂停。');
+  });
+
+  it('clears the old task-start notice while its pause is awaiting acknowledgement', async () => {
+    const backend = await pendingPause();
+    await backend.publishPaused();
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '更新歌单清单' })); });
+    expect(screen.getByRole('status').textContent).toContain('已开始');
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '暂停任务' })); });
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
+    await backend.settle('failure');
+    expect(screen.getByRole('alert').textContent).toContain('与本机服务的连接中断');
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: '暂停任务' }).disabled).toBe(false);
+  });
 });
