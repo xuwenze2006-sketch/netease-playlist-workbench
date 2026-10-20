@@ -108,11 +108,54 @@ class QualityProjectionTests(unittest.TestCase):
         self.assertEqual(draft['records'][0]['pending_reasons'], [])
         self.assertEqual(draft['quality']['draft_summary'], {
             'pending_count': 2, 'unknown_style_count': 1, 'unknown_language_count': 2})
-        self.assertEqual(draft['quality']['review_count'], 2)
+        self.assertEqual(draft['quality']['review_count'], 3)
+        self.assertEqual([r['position'] for r in f.view(basis='draft', review='needs_review')['records']], [1, 3, 4])
+
+    def test_new_draft_unknown_labels_join_review_without_rewriting_original_diagnostics(self):
+        f = self.fixture
+        original = f.view()
+        original_row = {key: value for key, value in original['records'][0].items() if key != 'draft'}
+        for labels in ({'styles': ['待辨识']}, {'language': '待辨识'},
+                       {'styles': ['待辨识'], 'language': '待辨识'}):
+            with self.subTest(labels=labels):
+                self.save(1, **labels)
+                draft = f.view(basis='draft', review='needs_review')
+                self.assertEqual([r['position'] for r in draft['records']], [1, 3, 4])
+                self.assertEqual(draft['quality']['review_count'], 3)
+                self.assertEqual({key: value for key, value in draft['records'][0].items() if key != 'draft'},
+                                 original_row)
+                self.assertEqual(draft['summary'], original['summary'])
+                self.assertEqual(draft['playlists'], original['playlists'])
+                unchanged = f.view(review='needs_review')
+                self.assertEqual([r['position'] for r in unchanged['records']], [3, 4])
+                self.assertEqual(unchanged['quality']['review_count'], 2)
+
+    def test_draft_review_count_is_global_deduplicated_and_updates_after_removal(self):
+        f = self.fixture
+        self.save(1, language='待辨识')
+        self.save(3, language='待辨识')
+        page = f.view(basis='draft', review='needs_review', limit=1, offset=1)
+        self.assertEqual([r['position'] for r in page['records']], [3])
+        self.assertEqual(page['pagination']['total'], 3)
+        self.assertEqual(page['quality']['review_count'], 3)
+        filtered = f.view(basis='draft', review='needs_review', query='Rain',
+                          dimension='language', tag='待辨识', limit=1)
+        self.assertEqual([r['position'] for r in filtered['records']], [1])
+        self.assertEqual(filtered['pagination']['total'], 1)
+        self.assertEqual(filtered['quality']['review_count'], 3)
+        all_rows = f.view(basis='draft')
+        web_classification.save_local_classification_draft(f.project, {
+            'action': 'remove', 'source_version': all_rows['quality']['source_version'],
+            'revision': all_rows['quality']['revision'],
+            'record_key': all_rows['records'][0]['record_key']})
+        restored = f.view(basis='draft', review='needs_review')
+        self.assertEqual([r['position'] for r in restored['records']], [3, 4])
+        self.assertEqual(restored['quality']['review_count'], 2)
 
     def test_stale_or_corrupt_draft_basis_does_not_apply_edits(self):
         f = self.fixture
-        self.save(scenes=['放松睡前'])
+        self.save(scenes=['放松睡前'], language='待辨识')
+        self.assertEqual(f.view(basis='draft')['quality']['review_count'], 3)
         f.records[0]['evidence_note'] += '，来源更新'
         f.write('全库分类-逐曲结果.json', f.report, 101)
         stale = f.view(basis='draft')
@@ -120,12 +163,16 @@ class QualityProjectionTests(unittest.TestCase):
         self.assertEqual(stale['quality']['draft_summary']['pending_count'], 2)
         self.assertTrue(all(r['draft'] is None for r in stale['records']))
         self.assertNotIn('放松睡前', stale['options']['scene'])
+        self.assertEqual(stale['quality']['review_count'], 2)
+        self.assertEqual([r['position'] for r in f.view(basis='draft', review='needs_review')['records']], [3, 4])
         (f.project / '.organizer' / 'classification-draft.json').write_text('{}', encoding='utf-8')
         corrupt = f.view(basis='draft')
         self.assertEqual(corrupt['status'], 'available')
         self.assertEqual(corrupt['quality']['draft_status'], 'unavailable')
         self.assertEqual(corrupt['quality']['draft_summary']['pending_count'], 2)
         self.assertTrue(all(r['draft'] is None for r in corrupt['records']))
+        self.assertEqual(corrupt['quality']['review_count'], 2)
+        self.assertEqual([r['position'] for r in f.view(basis='draft', review='needs_review')['records']], [3, 4])
 
     def test_version_hints_are_separate_from_review_and_do_not_infer_labels(self):
         f = self.fixture

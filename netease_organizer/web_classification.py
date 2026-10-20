@@ -403,6 +403,12 @@ def _filter_labels(row, basis):
     return row['draft'] if basis == 'draft' and row['draft'] is not None else row
 
 
+def _needs_review(row, basis):
+    # A correction is not a completed review; retain every source diagnostic.
+    return row['needs_review'] or (
+        basis == 'draft' and bool(_pending_labels(_filter_labels(row, basis))))
+
+
 def _options(records, basis):
     present = {dim: set() for dim in _DIMENSIONS}
     for row in records:
@@ -417,7 +423,7 @@ def _matches(row, filters, pilot_positions=()):
     effective = _filter_labels(row, filters['basis'])
     if filters['review'] == 'pending' and not _pending_labels(effective):
         return False
-    if filters['review'] == 'needs_review' and not row['needs_review']:
+    if filters['review'] == 'needs_review' and not _needs_review(row, filters['basis']):
         return False
     if filters['review'] == 'conflict' and not row['review_note']:
         return False
@@ -551,6 +557,7 @@ def build_local_classification(project, *, offset=0, limit=50, query='', dimensi
             result = _empty('not_loaded', filters, offset, limit)
         else:
             visible = _with_draft(cache_project, projection)
+            visible['quality']['review_count'] = sum(_needs_review(row, basis) for row in visible['records'])
             if basis == 'draft':
                 visible['options'] = _options(visible['records'], basis)
             pilot_positions = set(visible['quality']['pilot_positions'])
