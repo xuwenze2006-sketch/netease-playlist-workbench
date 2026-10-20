@@ -60,7 +60,7 @@ python -X utf8 .\scripts\audit_classification_quality.py
 - `quality-report.json`：来源哈希、汇总、逐曲复核原因。
 - `pilot-review.json`：默认 50 首诊断试点、录音版本核对提示、六种场景收录条件，以及空白评估字段。
 
-来源报告上限为 16 MiB。脚本检查来源格式、序号唯一性和有效评分；输出使用排他新建，任何一个目标文件已存在都会拒绝重跑。来源文件所在目录不能直接作为输出目录。第二轮使用新目录：
+来源报告上限为 16 MiB。脚本检查来源格式、序号唯一性和有效评分。与工作台一致，旧报告缺失或为 `null` 的 `style_judgment_score` 保留为未记录，不补造分数，也不自动当作低分；缺失的 `review_note` 按 `false` 读取。显式填写的无效分数或非布尔复核标记仍会被拒绝。输出使用排他新建，任何一个目标文件已存在都会拒绝重跑。来源文件所在目录不能直接作为输出目录。第二轮使用新目录：
 
 ```powershell
 python -X utf8 .\scripts\audit_classification_quality.py --output-dir .\artifacts\classification-quality-run-02

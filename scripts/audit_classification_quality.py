@@ -67,9 +67,9 @@ def _load_records(raw):
         if any(type(record.get(key)) is not list or any(type(value) is not str for value in record[key]) for key in _LIST_FIELDS):
             raise ValueError("来源逐曲分类或待辨识字段不兼容。")
         score = record.get("style_judgment_score")
-        if type(score) not in (int, float) or not 0 <= score <= 1 or not math.isfinite(score):
+        if score is not None and (type(score) not in (int, float) or not 0 <= score <= 1 or not math.isfinite(score)):
             raise ValueError("来源风格判断分数必须是 0 到 1 的有限数字。")
-        if type(record.get("review_note")) is not bool:
+        if type(record.get("review_note", False)) is not bool:
             raise ValueError("来源复核标记必须是布尔值。")
     # Also reject duplicate, missing, boolean or non-positive positions.
     select_pilot(records, limit=0)
@@ -81,8 +81,8 @@ def _public_record(record):
         "position": record["position"],
         **{key: record[key] for key in _TEXT_FIELDS},
         **{key: list(record[key]) for key in _LIST_FIELDS},
-        "style_judgment_score": record["style_judgment_score"],
-        "review_note": record["review_note"],
+        "style_judgment_score": record.get("style_judgment_score"),
+        "review_note": record.get("review_note", False),
     }
 
 

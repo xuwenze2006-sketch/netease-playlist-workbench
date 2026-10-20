@@ -287,6 +287,48 @@ class ClassificationQualityScriptTests(unittest.TestCase):
         self.assertEqual(summary['explicit_unverified_evidence_count'], 1)
         self.assertEqual(summary['needs_review_count'], 5)
 
+    def test_legacy_optional_quality_fields_remain_unrecorded_in_both_drafts(self):
+        variants = (
+            ('null-score', {'style_judgment_score': None}, ()),
+            ('missing-score', {}, ('style_judgment_score',)),
+            ('missing-review', {}, ('review_note',)),
+            ('null-score-missing-review', {'style_judgment_score': None}, ('review_note',)),
+            ('missing-both', {}, ('style_judgment_score', 'review_note')),
+        )
+        for name, changes, missing in variants:
+            with self.subTest(variant=name):
+                entry = record(1, styles=['待辨识'], pending_reasons=['风格待辨识'], **changes)
+                for key in missing:
+                    del entry[key]
+                self.records = [entry]
+                self.write_source()
+                before = self.source.read_bytes()
+                output = self.root / name
+                result = self.run_script(output)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                quality = json.loads((output / 'quality-report.json').read_text(encoding='utf-8'))
+                pilot = json.loads((output / 'pilot-review.json').read_text(encoding='utf-8'))
+                self.assertEqual(quality['summary']['needs_review_count'], 1)
+                self.assertEqual(quality['summary']['low_score_without_pending_count'], 0)
+                self.assertEqual(quality['summary']['conflict_without_pending_count'], 0)
+                for draft_entry in (quality['flagged_records'][0], pilot['records'][0]):
+                    self.assertEqual(draft_entry['style_judgment_score'], entry.get('style_judgment_score'))
+                    self.assertIs(draft_entry['review_note'], False)
+                    self.assertEqual(draft_entry['review_reasons'], ['风格待辨识'])
+                self.assertFalse(pilot['records'][0]['evaluation']['evaluated'])
+                self.assertEqual(self.source.read_bytes(), before)
+
+    def test_explicit_invalid_review_flags_are_rejected_before_creating_drafts(self):
+        for flag in (None, 0, 1, 'false', [], {}):
+            with self.subTest(flag=flag):
+                self.records = [record(1, review_note=flag)]
+                self.write_source()
+                before = self.source.read_bytes()
+                result = self.run_script()
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertFalse(self.output.exists())
+                self.assertEqual(self.source.read_bytes(), before)
+
     def test_rerun_and_partial_existing_outputs_are_never_overwritten(self):
         for filename in ("quality-report.json", "pilot-review.json"):
             with self.subTest(filename=filename):
@@ -483,7 +525,11 @@ class ClassificationQualityScriptTests(unittest.TestCase):
             {"kind": "approved_classification_plan", "records": self.records},
             {"records": [record(1), record(1)]},
             {"records": [record(1, style_judgment_score=float("nan"))]},
+            {"records": [record(1, style_judgment_score=float("inf"))]},
             {"records": [record(1, style_judgment_score=True)]},
+            {"records": [record(1, style_judgment_score='0.9')]},
+            {"records": [record(1, style_judgment_score=-0.1)]},
+            {"records": [record(1, style_judgment_score=1.1)]},
             {"records": [record(1, style_judgment_score=10 ** 400)]},
         ]
         for document in bad_documents:
