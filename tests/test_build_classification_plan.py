@@ -1,6 +1,7 @@
 """Offline plan generation preserves accepted manual language review state."""
 
 import contextlib
+import csv
 import io
 import json
 import tempfile
@@ -17,8 +18,8 @@ class LocalArtifactWriter:
     def __init__(self, root):
         self.artifacts = Path(root) / 'artifacts'
 
-    def _write_artifact(self, filename, text):
-        (self.artifacts / filename).write_text(text, encoding='utf-8')
+    def _write_artifact(self, filename, text, *, newline=None):
+        (self.artifacts / filename).write_text(text, encoding='utf-8', newline=newline)
 
 
 class BuildClassificationPlanTests(unittest.TestCase):
@@ -133,6 +134,53 @@ class BuildClassificationPlanTests(unittest.TestCase):
                 self.assertNotIn('不应采用', record['language_evidence_note'])
                 self.assertIs(record['review_note'], model is not None)
                 self.assertEqual(report['summary']['review_note_count'], 0 if model is None else 1)
+
+    def test_csv_text_fields_escape_hidden_and_fullwidth_formula_prefixes(self):
+        cases = (
+            ('=1+1', "'=1+1"), ('+1+1', "'+1+1"),
+            ('-1+1', "'-1+1"), ('@SUM(1,1)', "'@SUM(1,1)"),
+            ('\t=1+1', "'\t=1+1"), ('\r=1+1', "'\r=1+1"),
+            ('\n=1+1', "'\n=1+1"), ('\t普通文本', "'\t普通文本"),
+            (' =1+1', "' =1+1"), (' \t\r=1+1', "' \t\r=1+1"),
+            ('\u00a0+1+1', "'\u00a0+1+1"), ('　＠SUM(1,1)', "'　＠SUM(1,1)"),
+            ('＝1+1', "'＝1+1"), ('＋1+1', "'＋1+1"),
+            ('－1+1', "'－1+1"), ('＠SUM(1,1)', "'＠SUM(1,1)"),
+        )
+        for value, escaped in cases:
+            with self.subTest(value=value):
+                self.assert_exported_text(value, escaped)
+
+    def test_csv_ordinary_and_already_escaped_text_keeps_delimiters_and_record_boundaries(self):
+        for value in ('普通标题', '  普通标题', "'=1+1", '录音,\r=1+1\n"引号";@SUM(1,1)'):
+            with self.subTest(value=value):
+                self.assert_exported_text(value, value)
+
+    def assert_exported_text(self, value, expected_csv):
+        root = self.fixture({'position': 1, 'language': 'en', 'notes': '核验依据'})
+        artifacts = root / 'artifacts'
+        baseline_path = artifacts / '全库分类-账号基线.json'
+        baseline = json.loads(baseline_path.read_text(encoding='utf-8'))
+        track = baseline['snapshot']['liked']['tracks'][0]
+        track.update(name=value, artists=[{'name': value}])
+        baseline_path.write_text(json.dumps(baseline, ensure_ascii=False), encoding='utf-8')
+        judgment_path = artifacts / '分类判断-分块01.json'
+        judgment = json.loads(judgment_path.read_text(encoding='utf-8'))
+        judgment[0][5] = value
+        judgment_path.write_text(json.dumps(judgment, ensure_ascii=False), encoding='utf-8')
+        before = {path.name: path.read_bytes() for path in artifacts.iterdir()}
+        self.invoke(root)
+        with (artifacts / '喜欢的音乐-分类明细.csv').open(encoding='utf-8-sig', newline='') as stream:
+            rows = list(csv.reader(stream))
+        self.assertEqual([len(row) for row in rows], [9, 9])
+        self.assertEqual([rows[1][index] for index in (1, 2, 7)], [expected_csv] * 3)
+        self.assertEqual(rows[1][0], '1')
+        self.assertEqual(rows[1][8], '单曲录音复核：核验依据')
+        record = json.loads((artifacts / '全库分类-逐曲结果.json').read_text(encoding='utf-8'))['records'][0]
+        self.assertEqual([record[key] for key in ('name', 'artists', 'evidence_note')], [value] * 3)
+        plan = json.loads((artifacts / '分类整理计划.json').read_text(encoding='utf-8'))
+        self.assertEqual(plan['source_track_ids'], ['A' * 32])
+        self.assertTrue(all(job['candidate_track_ids'] == ['A' * 32] for job in plan['jobs']))
+        self.assertEqual({name: (artifacts / name).read_bytes() for name in before}, before)
 
 
 if __name__ == '__main__':

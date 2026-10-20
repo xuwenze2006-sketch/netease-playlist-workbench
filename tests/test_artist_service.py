@@ -1,5 +1,7 @@
 import copy
+import csv
 import hashlib
+import io
 import json
 import os
 import tempfile
@@ -297,6 +299,19 @@ class ArtistServiceTests(unittest.TestCase):
             path = self.controller._write_artifact('保存测试.json', '{"confirmed":true}')
         self.assertEqual(json.loads(path.read_text(encoding='utf-8')), {'confirmed':True})
         self.assertEqual(attempts[0], 3)
+
+    def test_csv_artifact_preserves_embedded_newlines(self):
+        values = ['单独\r回车', '单独\n换行', '成对\r\n换行', '逗号,"引号"']
+        content = io.StringIO(newline='')
+        writer = csv.writer(content, lineterminator='\n')
+        writer.writerow(['歌曲', '艺人', '依据', '备注'])
+        writer.writerow(values)
+        path = self.controller._write_artifact(
+            '换行测试.csv', '\ufeff' + content.getvalue().removesuffix('\n'), newline='')
+        with path.open(encoding='utf-8-sig', newline='') as stream:
+            rows = list(csv.reader(stream))
+        self.assertEqual(rows, [['歌曲', '艺人', '依据', '备注'], values])
+        self.assertFalse(list(path.parent.glob('.organizer-*.tmp')))
 
     def test_no_write_preflight_failure_does_not_manufacture_pending_journal(self):
         from test_create import FakeCli

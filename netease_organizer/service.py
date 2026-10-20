@@ -510,12 +510,12 @@ class Organizer:
             raise OrganizerError("整理输出必须保存在本项目中，且不能位于网易云客户端数据目录。")
         return target
 
-    def _write_artifact(self, filename, text):
+    def _write_artifact(self, filename, text, *, newline=None):
         target = self._workspace_target(Path('artifacts') / filename)
         target.parent.mkdir(parents=True, exist_ok=True)
         temporary = None
         try:
-            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=target.parent,
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline=newline, dir=target.parent,
                                              prefix=".organizer-", suffix=".tmp", delete=False) as stream:
                 temporary = Path(stream.name)
                 stream.write(text + "\n")

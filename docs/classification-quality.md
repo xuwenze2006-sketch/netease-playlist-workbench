@@ -47,6 +47,12 @@
 
 `.organizer/classification-draft.lock` 是常驻锁文件，保存结束后保留文件、释放锁。不要通过删除它绕过并发保护。备份或迁移时保留草稿，公开源码时继续排除整个 `.organizer/` 目录。
 
+## 分类明细 CSV 导出
+
+`scripts/build_classification_plan.py` 生成的“喜欢的音乐-分类明细.csv”保留单元格内原有的回车、换行、逗号和引号。以制表符、回车或换行开头，或在前导空白后以 `= + - @` 及对应全角字符开头的内容，会加单引号作为文字前缀；已有单引号的内容保持原样。该处理仅作用于 CSV，原始 JSON 和计划中的文字不变。
+
+文字前缀用于降低表格软件将内容解释成公式的风险，不能保证所有软件、导入设置及另存后重开行为一致；本项目未完成 Excel 或 LibreOffice 的执行验证。相关输入边界见 [OWASP CSV 注入说明](https://wstg.owasp.org/latest/4-Web_Application_Security_Testing/07-Injection/21-CSV_Injection/)。
+
 ## 生成独立诊断草稿
 
 在项目根目录运行：

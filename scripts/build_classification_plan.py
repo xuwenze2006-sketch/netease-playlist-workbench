@@ -97,11 +97,13 @@ def main():
     controller._write_artifact('全库分类-需复核录音.json',json.dumps(review,ensure_ascii=False,indent=2)+'\n')
     def cell(x):
         s=str(x)
-        return "'"+s if s and s[:1] in '=+-@' else s
+        # Retain the source text; only the spreadsheet export gains a literal prefix.
+        start=s.lstrip()[:1]
+        return "'"+s if s.startswith(('\t','\r','\n')) or (start and start in '=+-@＝＋－＠') else s
     out=io.StringIO(newline='');w=csv.writer(out,lineterminator='\n')
     w.writerow(['序号','歌曲','艺人','风格','场景','语言','待辨识项','风格依据','语言依据'])
     for r in records:w.writerow([cell(x) for x in [r['position'],r['name'],r['artists'],'；'.join(r['styles']),'；'.join(r['scenes']),r['language'],'；'.join(r['pending_reasons']),r['evidence_note'],r['language_evidence_note']]])
-    controller._write_artifact('喜欢的音乐-分类明细.csv','\ufeff'+out.getvalue().removesuffix('\n'))
+    controller._write_artifact('喜欢的音乐-分类明细.csv','\ufeff'+out.getvalue().removesuffix('\n'),newline='')
     md=['# 喜欢的音乐分类清单','',f'当前红心歌曲 {len(tracks)} 首，分类歌单 {len(plan_jobs)} 个，集合覆盖 {summary["covered_count"]} 首。',
         f'风格待辨识 {summary["unknown_style_count"]} 首，语言待辨识 {summary["unknown_language_count"]} 首；待辨识歌单并集 {len(pending)} 首。','',
         '同一首歌可以进入多个风格、场景或语言入口。分类不删除原始红心歌曲。',
