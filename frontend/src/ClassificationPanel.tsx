@@ -3,7 +3,7 @@ import type { KeyboardEvent } from 'react';
 import { fetchClassification, postClassificationDraft, readSession } from './api';
 import { ClassificationEditor, ClassificationQualitySummary } from './ClassificationEditor';
 import type { ClassificationEditSession } from './ClassificationEditor';
-import { REVIEW_LABELS } from './classificationQuality';
+import { LANGUAGE_LABELS, REVIEW_LABELS, SCENE_LABELS, STYLE_LABELS } from './classificationQuality';
 import { Icon } from './icons';
 import { useSearchInput } from './useSearchInput';
 import type { ClassificationDimension, ClassificationDraftRequest, ClassificationPage } from './types';
@@ -251,6 +251,14 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
     filter({ dimension, tag });
     setView('songs');
   }
+  function openPlaylist(dimension: Dimension, tag: string) {
+    pageIntent.current = null;
+    refreshRequested.current = false;
+    setPageNotice('');
+    setInput('');
+    setSelection({ ...INITIAL, dimension, tag, ...(data?.quality ? { basis: 'original' as const } : {}) });
+    setView('songs');
+  }
   function changeView(next: View) {
     pageIntent.current = null;
     setView(next);
@@ -462,6 +470,7 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
       </div>}
       {draftBasis && applyingDraft && <p className="classification-basis-note">
         歌曲标签与待辨识筛选采用修正后分类；来源曲目、覆盖数和分类歌单数量仍为原统计，草稿尚未写入账号。
+        从分类歌单查看曲目会切换原分类并清除其他筛选。
       </p>}
       {failed && data?.status === 'available' && (
         <div className="classification-stale" role="alert">
@@ -736,7 +745,8 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
                 const tag =
                   dimension === 'review'
                     ? null
-                    : data.options[dimension].find(
+                    : (data.quality ? { scene: SCENE_LABELS, style: STYLE_LABELS, language: LANGUAGE_LABELS }[dimension]
+                      : data.options[dimension]).find(
                         (label) => playlist.name === `${DIMENSIONS[dimension]} · ${label}`,
                       );
                 return (
@@ -757,7 +767,7 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
                       }
                       onClick={() => {
                         if (dimension === 'review') clear(true, data?.quality ? 'original' : undefined);
-                        else if (tag) chooseTag(dimension, tag);
+                        else if (tag) openPlaylist(dimension, tag);
                       }}
                     >
                       {dimension === 'review' ? '查看全部待辨识' : '查看分类曲目'}

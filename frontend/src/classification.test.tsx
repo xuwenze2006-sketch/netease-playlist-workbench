@@ -460,6 +460,8 @@ describe('local classification results', () => {
     expect(vi.mocked(fetchClassification).mock.lastCall?.[1]).toMatchObject({
       dimension: 'style',
       tag: '流行',
+      review: 'all',
+      query: '',
       offset: 0,
     });
     await act(async () => {

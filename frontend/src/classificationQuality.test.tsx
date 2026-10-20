@@ -70,6 +70,98 @@ beforeEach(() => {
 });
 
 describe('classification review and local corrections', () => {
+  it.each([true, false])('opens the complete original playlist after draft moves (allMoved=%s)', async (allMoved) => {
+    const draft = { styles: ['流行抒情'], scenes: ['放松睡前'], language: '国语', reason: '已核对的草稿', recording_note: '' };
+    const source = allMoved ? page(1, draft) : twoSongPage(1, draft);
+    source.playlists[0].count = source.records.length;
+    source.quality!.draft_summary = { pending_count: 0, unknown_style_count: 0, unknown_language_count: 0 };
+    vi.mocked(fetchClassification).mockImplementation(async (_session, request) => {
+      const records = source.records.filter((row) => !request.tag ||
+        (request.basis === 'draft' && row.draft ? row.draft.scenes : row.scenes).includes(request.tag));
+      return { ...source, filters: request,
+        options: { ...source.options, scene: request.basis === 'draft'
+          ? allMoved ? ['放松睡前'] : ['通勤散步', '放松睡前'] : ['通勤散步'] },
+        records, pagination: { offset: 0, limit: 50, total: records.length, next_offset: null } };
+    });
+    await act(async () => { render(<ClassificationPanel />); });
+    fireEvent.change(screen.getByLabelText('分类依据'), { target: { value: 'draft' } });
+    await screen.findByRole('button', { name: '场景 · 放松睡前' });
+    fireEvent.click(screen.getByRole('button', { name: '编辑本地修正' }));
+    fireEvent.change(editor().getByLabelText('修正理由'), { target: { value: '导航前的未保存依据' } });
+    fireEvent.click(screen.getByRole('tab', { name: '分类歌单' }));
+    const card = screen.getByRole('heading', { name: '场景 · 通勤散步' }).closest('article')!;
+    const opener = within(card).getByRole('button', { name: '查看分类曲目' });
+    expect(opener).toHaveProperty('disabled', false);
+    fireEvent.click(opener);
+    await waitFor(() => expect(screen.getByLabelText('分类依据')).toHaveProperty('value', 'original'));
+    expect(vi.mocked(fetchClassification).mock.lastCall?.[1]).toEqual({
+      dimension: 'scene', tag: '通勤散步', review: 'all', query: '', offset: 0, basis: 'original',
+    });
+    const tracks = within(screen.getByRole('region', { name: '逐曲分类结果' }));
+    expect(await tracks.findByRole('heading', { name: '版本有疑问的歌' })).toBeTruthy();
+    expect(tracks.getAllByRole('article')).toHaveLength(allMoved ? 1 : 2);
+    expect(editor().getByLabelText('修正理由')).toHaveProperty('value', '导航前的未保存依据');
+    expect(vi.mocked(postClassificationDraft)).not.toHaveBeenCalled();
+  });
+
+  it('keeps track label shortcuts on the draft basis with search and review intersections', async () => {
+    await open();
+    fireEvent.change(screen.getByLabelText('分类依据'), { target: { value: 'draft' } });
+    await screen.findByText('修正后待辨识');
+    fireEvent.change(screen.getByLabelText('复核筛选'), { target: { value: 'version' } });
+    fireEvent.change(screen.getByLabelText('搜索歌曲或歌手'), { target: { value: '版本' } });
+    await waitFor(() => expect(vi.mocked(fetchClassification).mock.lastCall?.[1].query).toBe('版本'));
+    fireEvent.click(await screen.findByRole('button', { name: '场景 · 通勤散步' }));
+    await waitFor(() => expect(vi.mocked(fetchClassification).mock.lastCall?.[1]).toMatchObject({
+      basis: 'draft', dimension: 'scene', tag: '通勤散步', review: 'version', query: '版本', offset: 0,
+    }));
+  });
+
+  it('clears search composition, review and later pagination when opening an original playlist', async () => {
+    const source = page();
+    source.records = Array.from({ length: 51 }, (_, index) => ({ ...source.records[0],
+      position: index + 1, record_key: (index + 1).toString(16).padStart(32, '0'), name: `Version Live ${index + 1}` }));
+    source.summary!.source_count = source.summary!.covered_count = source.playlists[0].count = 51;
+    vi.mocked(fetchClassification).mockImplementation(async (_session, request) => {
+      const records = source.records.filter((row) => row.name.includes(request.query));
+      return { ...source, filters: request, records: records.slice(request.offset, request.offset + 50),
+        pagination: { offset: request.offset, limit: 50, total: records.length,
+          next_offset: request.offset + 50 < records.length ? request.offset + 50 : null } };
+    });
+    await act(async () => { render(<ClassificationPanel />); });
+    fireEvent.change(screen.getByLabelText('分类依据'), { target: { value: 'draft' } });
+    await screen.findByText('修正后待辨识');
+    fireEvent.change(screen.getByLabelText('复核筛选'), { target: { value: 'version' } });
+    const search = screen.getByLabelText('搜索歌曲或歌手');
+    fireEvent.change(search, { target: { value: 'Version' } });
+    await waitFor(() => expect(vi.mocked(fetchClassification).mock.lastCall?.[1].query).toBe('Version'));
+    fireEvent.click(screen.getByRole('button', { name: '下一页' }));
+    await screen.findByRole('heading', { name: 'Version Live 51' });
+    fireEvent.compositionStart(search);
+    fireEvent.change(search, { target: { value: '未确认的候选词' } });
+    fireEvent.click(screen.getByRole('tab', { name: '分类歌单' }));
+    fireEvent.click(screen.getByRole('button', { name: '查看分类曲目' }));
+    await screen.findByRole('heading', { name: 'Version Live 1' });
+    expect(screen.getByLabelText('搜索歌曲或歌手')).toHaveProperty('value', '');
+    expect(vi.mocked(fetchClassification).mock.lastCall?.[1]).toEqual({
+      dimension: 'scene', tag: '通勤散步', review: 'all', query: '', offset: 0, basis: 'original',
+    });
+    expect(screen.getByRole('region', { name: '逐曲分类结果' }).querySelectorAll('article')).toHaveLength(50);
+  });
+
+  it('does not open custom or mismatched canonical playlist names on quality pages', async () => {
+    const data = page();
+    data.playlists = [
+      { name: '场景 · 通勤散步（自定义）', dimension: 'scene', count: 1, key: null },
+      { name: '风格 · 通勤散步', dimension: 'style', count: 1, key: null },
+      { name: '通勤散步', dimension: 'scene', count: 1, key: null },
+    ];
+    await open(data);
+    fireEvent.click(screen.getByRole('tab', { name: '分类歌单' }));
+    for (const button of screen.getAllByRole('button', { name: '查看分类曲目' }))
+      expect(button).toHaveProperty('disabled', true);
+  });
+
   it.each([
     ['save', true], ['save', false], ['remove', true], ['remove', false],
   ] as const)('preserves another editor and evidence disclosure after own %s (open=%s)', async (action, evidenceOpen) => {
