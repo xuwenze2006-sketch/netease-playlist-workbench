@@ -78,6 +78,46 @@ describe('local inline preview', () => {
     expect(screen.queryByText(/缺失 0 首/)).toBeNull();
     expect(screen.queryByText(/已核对 0 首/)).toBeNull();
   });
+  it.each([21, 100])('shows all %i credited artists from a valid local candidate', async (count) => {
+    const credits = Array.from({ length: count }, (_, index) => `合作歌手${index + 1}`);
+    const fetcher = prepare({
+      ...preview,
+      artists: [{ name: '测试歌手', count: 1, tracks: [{ name: '合唱曲目', artists: credits }] }],
+    });
+    render(<App />);
+    await screen.findByText('预览测试用户');
+    fireEvent.click(screen.getByRole('button', { name: '查看整理内容' }));
+    fireEvent.click(screen.getByRole('button', { name: '查看测试歌手的候选曲目' }));
+    expect(screen.getByText('合唱曲目')).toBeTruthy();
+    expect(screen.getByText(credits.join(' / '))).toBeTruthy();
+    expect(fetcher.mock.calls.every((call) => call[0] === '/api/state')).toBe(true);
+  });
+  it('rejects a candidate exceeding the backend artist limit while keeping the directory', async () => {
+    prepare({
+      ...preview,
+      artists: [{ name: '测试歌手', count: 1, tracks: [{
+        name: '超限曲目', artists: Array.from({ length: 101 }, (_, index) => `歌手${index + 1}`),
+      }] }],
+    });
+    render(<App />);
+    await screen.findByText('预览测试用户');
+    expect(screen.getByText('我喜欢的音乐')).toBeTruthy();
+    expect(screen.getByText('还没有可用的整理预览')).toBeTruthy();
+  });
+  it.each([298, 299])('keeps a valid emoji intact when shortening a %i-character title', async (prefixLength) => {
+    const prefix = '长'.repeat(prefixLength);
+    const original = `${prefix}🎵`;
+    prepare({
+      ...preview,
+      artists: [{ name: '测试歌手', count: 1, tracks: [{ name: original, artists: ['测试歌手'] }] }],
+    });
+    render(<App />);
+    await screen.findByText('预览测试用户');
+    fireEvent.click(screen.getByRole('button', { name: '查看整理内容' }));
+    fireEvent.click(screen.getByRole('button', { name: '查看测试歌手的候选曲目' }));
+    // A 300-unit display budget can include both halves of the emoji, or neither.
+    expect(screen.getByText(prefixLength === 298 ? original : prefix)).toBeTruthy();
+  });
   it('shows the exact full-scope verification counts and local timestamp', async () => {
     prepare(preview);
     render(<App />);

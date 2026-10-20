@@ -678,6 +678,25 @@ export default function App() {
         return true;
       } catch (cause) {
         if (generation !== actionGeneration.current) return false;
+        const readIntent = playlistReadIntentRef.current;
+        const observedRead = stateRef.current?.job;
+        if (
+          cause instanceof LocalApiError && cause.acceptanceUnknown && readKey &&
+          readIntent?.key === readKey && readIntent.sequence === generation &&
+          readIntent.baseline_id === baselineId && readIntent.acceptance === 'accepted' &&
+          readIntent.job_id && observedRead?.id === readIntent.job_id &&
+          observedRead.id !== baselineId && observedRead.action === 'read_playlist' &&
+          observedRead.playlist_key === readKey && observedRead.result?.playlist_key === readKey &&
+          ['completed', 'partial'].includes(observedRead.status) &&
+          ['completed', 'partial'].includes(observedRead.result.status ?? '') &&
+          observedRead.result.record_saved === true && observedRead.result.outcome_known === true &&
+          observedRead.result.write_attempted === false && observedRead.result.applied_to_account === false
+        ) {
+          // This exact read was already saved and consumed by polling. A lost
+          // POST reply must not replace its confirmed result or refresh it twice.
+          setError('');
+          return true;
+        }
         // Lost acceptance can also arrive after the completed job was polled.
         if (cause instanceof LocalApiError && cause.acceptanceUnknown)
           stateFingerprint.current = '';

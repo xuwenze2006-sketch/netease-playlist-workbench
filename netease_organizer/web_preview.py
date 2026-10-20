@@ -37,7 +37,8 @@ def _encrypted(value):
 
 def _text(value):
     if (not isinstance(value, str) or not value.strip() or len(value) > 512
-            or any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in value)):
+            or any(ord(char) < 32 or 127 <= ord(char) <= 159 or 0xD800 <= ord(char) <= 0xDFFF
+                   for char in value)):
         raise _InvalidRecord()
     return value
 

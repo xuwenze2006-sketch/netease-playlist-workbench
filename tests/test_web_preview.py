@@ -1,12 +1,17 @@
 import copy
+import http.client
 import json
 import os
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
 from netease_organizer.online_planning import build_online_plan
 from netease_organizer.web_preview import build_local_preview
+from netease_organizer.web_server import create_server, shutdown_server
+from netease_organizer.web_state import build_local_state
+from test_web_server import FakeController
 
 
 def snapshot(*, names_only=False, track_count=8):
@@ -88,6 +93,73 @@ class WebPreviewTests(unittest.TestCase):
         self.assertEqual(result['artists'], [])
         self.assertEqual(result['liked'], {'expected': 8, 'observed': None, 'missing': None})
         self.assertIn('本次未读取红心歌曲明细。', result['limitations'])
+
+    def test_surrogate_track_and_artist_names_cannot_supply_a_preview(self):
+        for field in ('track', 'artist'):
+            for surrogate in ('\ud800', '\udfff'):
+                with self.subTest(field=field, codepoint=ord(surrogate)):
+                    live = snapshot()
+                    if field == 'track':
+                        live['liked']['tracks'][0]['name'] = '损坏曲名' + surrogate
+                    else:
+                        for track in live['liked']['tracks']:
+                            track['artists'][0]['name'] = '损坏署名' + surrogate
+                    plan = build_online_plan(live)
+                    for name, value, timestamp in (('在线整理快照.json', live, 100),
+                                                   ('在线整理清单.json', plan, 101)):
+                        path = self.project / 'artifacts' / name
+                        path.write_text(json.dumps(value, ensure_ascii=True), encoding='utf-8')
+                        os.utime(path, (timestamp, timestamp))
+                    self.assertIsNone(self.preview())
+
+    def test_astral_song_and_artist_names_remain_utf8_serializable(self):
+        live = snapshot()
+        live['liked']['tracks'][0]['name'] = '曲名 🎵'
+        for track in live['liked']['tracks']:
+            track['artists'][0]['name'] = '歌手 🎧'
+        self.pair(live)
+        result = self.preview()
+        self.assertEqual(result['artists'][0]['tracks'][0],
+                         {'name': '曲名 🎵', 'artists': ['歌手 🎧']})
+        encoded = json.dumps(build_local_state(self.project), ensure_ascii=False).encode('utf-8')
+        self.assertIn('曲名 🎵', encoded.decode('utf-8'))
+
+    def test_bad_preview_keeps_valid_directory_available_through_state_http(self):
+        live, _ = self.pair()
+        live['liked']['tracks'][0]['name'] = '损坏曲名\ud800'
+        source = self.project / 'artifacts' / '在线整理快照.json'
+        source.write_text(json.dumps(live, ensure_ascii=True), encoding='utf-8')
+        os.utime(source, (100, 100))
+        before = {path.name: path.read_bytes() for path in source.parent.iterdir()}
+        assets = self.project / 'assets'
+        assets.mkdir()
+        (assets / 'index.html').write_text('__ORGANIZER_SESSION__', encoding='utf-8')
+        controller = FakeController(self.project)
+        server = create_server(controller, assets=assets,
+                               state_provider=lambda: build_local_state(self.project))
+        thread = threading.Thread(target=server.serve_forever,
+                                  kwargs={'poll_interval': .01}, daemon=True)
+        thread.start()
+        connection = http.client.HTTPConnection('127.0.0.1', server.server_address[1], timeout=3)
+        try:
+            connection.request('GET', '/api/state', headers={
+                'X-Organizer-Session': server.application.attach_page()})
+            try:
+                response = connection.getresponse()
+            except http.client.RemoteDisconnected:
+                self.fail('A damaged optional preview must not disconnect the state response.')
+            self.assertEqual(response.status, 200)
+            state = json.loads(response.read().decode('utf-8'))
+            self.assertEqual([row['key'] for row in state['data']['playlists']],
+                             ['34567890', '23456789'])
+            self.assertEqual(state['data']['account'], {'nickname': '测试用户'})
+            self.assertIsNone(state['data']['preview'])
+        finally:
+            connection.close()
+            shutdown_server(server)
+            thread.join(3)
+        self.assertEqual(before, {path.name: path.read_bytes() for path in source.parent.iterdir()})
+        self.assertEqual(controller.calls, [('doctor', {})])
 
     def test_latest_reliable_pair_is_selected_and_bad_newer_pair_falls_back(self):
         self.pair(timestamp=100)

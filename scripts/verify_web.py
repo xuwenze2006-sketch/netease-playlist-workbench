@@ -37,6 +37,8 @@ _ASSERTIONS = {
 _BROWSER_STAGES = frozenset(('layout', 'consent', 'create', 'create_gate', 'pause', 'checkpoint',
                             'resume', 'completed', 'reload', 'close', 'closed_readback'))
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
+# Windows browser/profile shutdown can outlast eight seconds without a failure.
+BROWSER_CLOSE_TIMEOUT = 20
 
 
 class VerificationError(RuntimeError):
@@ -233,7 +235,7 @@ class Cli:
         successful = True
         for command in ('close', 'delete-data'):
             try:
-                self.command(command, timeout=8, cleanup=True)
+                self.command(command, timeout=BROWSER_CLOSE_TIMEOUT if command == 'close' else 8, cleanup=True)
             except VerificationError:
                 successful = False
         return successful

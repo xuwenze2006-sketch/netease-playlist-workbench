@@ -23,7 +23,12 @@ function object(value: unknown): ObjectValue {
 }
 function text(value: unknown, maximum = 2000): string {
   if (typeof value !== 'string') throw new Error('invalid text');
-  return value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '').slice(0, maximum);
+  const cleaned = value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '');
+  let end = Math.min(cleaned.length, maximum);
+  // Keep the display budget without splitting a valid UTF-16 surrogate pair.
+  const before = cleaned.charCodeAt(end - 1), after = cleaned.charCodeAt(end);
+  if (before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff) end -= 1;
+  return cleaned.slice(0, end);
 }
 function count(value: unknown): number {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0)
@@ -228,7 +233,7 @@ function preview(value: unknown): LocalPreview | null {
           const track = object(value);
           const name = text(track.name, 300);
           if (!name) throw new Error('empty track');
-          return { name, artists: array(track.artists, 20).map((name) => text(name, 300)) };
+          return { name, artists: array(track.artists, 100).map((name) => text(name, 300)) };
         });
         const total = count(item.count);
         if (total < tracks.length) throw new Error('invalid tracks');

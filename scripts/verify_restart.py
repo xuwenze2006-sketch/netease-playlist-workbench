@@ -20,11 +20,11 @@ import time
 from types import MappingProxyType
 
 try:
-    from .verify_web import (PROJECT, Cli, VerificationError, _NO_WINDOW, _announcement,
+    from .verify_web import (PROJECT, BROWSER_CLOSE_TIMEOUT, Cli, VerificationError, _NO_WINDOW, _announcement,
                              _json, file_signature, load_fresh_report, locate_cli,
                              stop_helper, write_report)
 except ImportError:
-    from verify_web import (PROJECT, Cli, VerificationError, _NO_WINDOW, _announcement,
+    from verify_web import (PROJECT, BROWSER_CLOSE_TIMEOUT, Cli, VerificationError, _NO_WINDOW, _announcement,
                             _json, file_signature, load_fresh_report, locate_cli,
                             stop_helper, write_report)
 
@@ -351,7 +351,7 @@ def _cleanup_browser(cli):
     try:
         for _ in range(2):
             try:
-                cli.command('close', timeout=8, cleanup=True)
+                cli.command('close', timeout=BROWSER_CLOSE_TIMEOUT, cleanup=True)
                 break
             except (Exception, KeyboardInterrupt):
                 successful = False

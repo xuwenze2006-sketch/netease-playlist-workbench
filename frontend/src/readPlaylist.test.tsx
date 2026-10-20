@@ -312,6 +312,112 @@ describe('explicit single playlist reading', () => {
       true,
     );
   });
+  it.each(['completed', 'partial'])(
+    'keeps a polled saved %s read confirmed when its delayed POST response is lost',
+    async (status) => {
+      const backend = prepare({ unknown: true, deferred: true });
+      await open();
+      await startRead();
+      backend.save(status === 'partial');
+      backend.state.job = {
+        ...readJob(status),
+        result: { ...savedResult, status },
+      };
+      await poll();
+      expect(screen.getByText('新保存的歌曲')).toBeTruthy();
+      expect(backend.reads()).toBe(2);
+
+      await act(async () => { backend.release(); });
+      expect(screen.queryAllByRole('alert')).toHaveLength(0);
+      expect(screen.getByRole('button', { name: '更新此歌单明细' }).hasAttribute('disabled')).toBe(false);
+      await poll();
+      expect(screen.queryAllByRole('alert')).toHaveLength(0);
+      expect(screen.getByText('新保存的歌曲')).toBeTruthy();
+      expect(backend.reads()).toBe(2);
+      expect(backend.posts()).toHaveLength(1);
+    },
+  );
+  it('clears a lost POST warning when the matching saved read is confirmed afterwards', async () => {
+    const backend = prepare({ unknown: true });
+    await open();
+    await startRead();
+    expect(screen.getByText('读取提交未确认，请查看任务状态，勿重复提交。')).toBeTruthy();
+
+    backend.save();
+    backend.state.job = readJob('completed');
+    await poll();
+    expect(screen.getByText('新保存的歌曲')).toBeTruthy();
+    expect(screen.queryAllByRole('alert')).toHaveLength(0);
+    expect(backend.reads()).toBe(2);
+    expect(backend.posts()).toHaveLength(1);
+  });
+  it.each([
+    'running', 'failed', 'paused', 'unsaved', 'unknown-outcome', 'write-attempted',
+    'applied', 'missing-flags', 'result-key', 'result-status', 'other-key', 'other-action', 'old-job', 'other-job',
+  ])('does not turn a delayed lost read submission into success for %s evidence', async (reason) => {
+    const backend = prepare({ unknown: true, deferred: true, oldJob: reason === 'old-job' });
+    await open();
+    await startRead();
+    if (reason === 'other-job') await poll(); // Bind the actual new-read before a different job appears.
+    let job = readJob('completed');
+    if (reason === 'running') job = readJob();
+    else if (reason === 'failed' || reason === 'paused')
+      job = { ...readJob(reason), result: { ...savedResult, status: reason, record_saved: false } };
+    else if (reason === 'unsaved') job.result = { ...savedResult, record_saved: false };
+    else if (reason === 'unknown-outcome') job.result = { ...savedResult, outcome_known: false };
+    else if (reason === 'write-attempted') job.result = { ...savedResult, write_attempted: true };
+    else if (reason === 'applied') job.result = { ...savedResult, applied_to_account: true };
+    else if (reason === 'missing-flags') job.result = { status: 'completed', playlist_key: '9001' };
+    else if (reason === 'result-key') job.result = { ...savedResult, playlist_key: '9002' };
+    else if (reason === 'result-status') job.result = { ...savedResult, status: 'failed' };
+    else if (reason === 'other-key') job.playlist_key = '9002';
+    else if (reason === 'other-action') job.action = 'check';
+    else if (reason === 'old-job') job.id = 'old-read';
+    else if (reason === 'other-job') job.id = 'other-read';
+    backend.state.job = job;
+    await poll();
+    await act(async () => { backend.release(); });
+    expect(screen.getAllByRole('alert').some((alert) =>
+      alert.textContent?.includes('与本机服务的连接中断'))).toBe(true);
+    expect(screen.queryByText('新保存的歌曲')).toBeNull();
+    expect(backend.reads()).toBe(1);
+    expect(backend.posts()).toHaveLength(1);
+  });
+  it('does not reuse a confirmed read for an older POST generation after explicit pause', async () => {
+    const backend = prepare({ unknown: true, deferred: true });
+    await open();
+    await startRead();
+    await poll();
+    await act(async () => {
+      fireEvent.click(within(screen.getByRole('region', { name: '歌单明细读取任务' }))
+        .getByRole('button', { name: '暂停任务' }));
+    });
+    backend.save();
+    backend.state.job = readJob('completed');
+    await poll();
+    await act(async () => { backend.release(); });
+    expect(screen.getByText('读取提交未确认，请查看任务状态，勿重复提交。')).toBeTruthy();
+    expect(backend.posts()).toHaveLength(1);
+  });
+  it('does not refresh a reopened drawer when the earlier confirmed read POST later disconnects', async () => {
+    const backend = prepare({ unknown: true, deferred: true });
+    await open();
+    await startRead();
+    fireEvent.click(screen.getByRole('button', { name: '关闭歌曲明细' }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '打开英语的歌曲明细' }));
+    });
+    backend.save();
+    backend.state.job = readJob('completed');
+    await poll();
+    await act(async () => { backend.release(); });
+    await poll();
+    expect(screen.queryAllByRole('alert')).toHaveLength(0);
+    expect(screen.getByText('尚未保存歌曲明细')).toBeTruthy();
+    expect(screen.queryByText('新保存的歌曲')).toBeNull();
+    expect(backend.reads()).toBe(2);
+    expect(backend.posts()).toHaveLength(1);
+  });
   it('does not adopt an old/null or different-target job to release unknown acceptance', async () => {
     const backend = prepare({ unknown: true });
     await open();

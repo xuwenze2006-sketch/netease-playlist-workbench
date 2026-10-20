@@ -208,7 +208,35 @@ class RestartEvidenceTests(unittest.TestCase):
             stop.assert_called_once_with(process, timeout=12)
             load.assert_not_called()
             for call in fake_cli.command.call_args_list[2:]:
-                self.assertEqual(call.kwargs, {'timeout': 8, 'cleanup': True})
+                self.assertEqual(call.kwargs, {'timeout': 20 if call.args[0] == 'close' else 8, 'cleanup': True})
+
+    def test_owned_browser_can_finish_a_nine_second_shutdown_before_deleting_data(self):
+        # Edge shutdown has exceeded the old eight-second limit in local runs.
+        # Model that latency without sleeping or starting a real browser.
+        for cleanup in (Cli.cleanup, verification._cleanup_browser):
+            with self.subTest(cleanup=cleanup.__qualname__), tempfile.TemporaryDirectory() as folder:
+                cli = Cli('node', Path(folder) / 'cli.js', 'own-slow-browser', folder, 0)
+                closed = False
+                events = []
+
+                def command(name, *args, **kwargs):
+                    nonlocal closed
+                    self.assertTrue(kwargs['cleanup'])
+                    self.assertGreater(kwargs['timeout'], 0)
+                    self.assertLessEqual(kwargs['timeout'], 20)
+                    events.append(name)
+                    if name == 'close':
+                        if kwargs['timeout'] < 9:
+                            raise VerificationError('cleanup')
+                        closed = True
+                    else:
+                        self.assertEqual(name, 'delete-data')
+                    return '{}'
+
+                cli.command = unittest.mock.Mock(side_effect=command)
+                self.assertTrue(cleanup(cli))
+                self.assertTrue(closed)
+                self.assertEqual(events, ['close', 'delete-data'])
 
     @unittest.skipUnless(shutil.which('node'), 'A local Node executable is required for JS syntax checks')
     def test_callbacks_parse_in_local_node_without_launching_a_browser(self):
