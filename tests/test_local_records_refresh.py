@@ -248,7 +248,7 @@ class LocalRecordsRefreshTests(unittest.TestCase):
                     self.assertEqual(len(self.app.state()['data']['playlists']), 1)
         self.assertEqual(self.controller.calls, [('doctor', {})])
 
-    def test_public_state_stays_compatible_while_explicit_refresh_preserves_cache(self):
+    def test_startup_stays_compatible_while_background_and_explicit_refresh_preserve_cache(self):
         for name in (classification_fixture.PLAN, classification_fixture.REPORT):
             (self.project / 'artifacts' / name).unlink()
         before = self.app.state()
@@ -263,7 +263,8 @@ class LocalRecordsRefreshTests(unittest.TestCase):
         self.assertTrue(self.app.wait_for_idle(3))
         status, state = self.get('/api/state')
         self.assertEqual(status, 200)
-        self.assertEqual(state['data']['source'], 'empty')
+        self.assertEqual(state['data'], before['data'])
+        self.assertEqual(state.get('local_records'), {'status': 'stale'})
         self.assertTrue(state['connection']['installed'])
         self.assertEqual(state['job']['status'], 'completed')
 
@@ -528,6 +529,160 @@ class LocalRecordsRefreshTests(unittest.TestCase):
         self.assertEqual(results, [403])
         self.assertEqual(self.app.state()['data'], before)
         self.assertTrue(self.app.wait_for_idle(3))
+
+
+class BackgroundLocalRecordsRefreshTests(unittest.TestCase):
+    warning = '本地记录暂时无法完整刷新，仍显示上次读取的资料，请稍后重试。'
+
+    def setUp(self):
+        self.records = classification_fixture.WebClassificationTests()
+        self.records.setUp()
+        self.addCleanup(self.records.doCleanups)
+        self.project = self.records.project.resolve()
+        self.controller = FakeController(self.project)
+        self.provider = lambda: build_local_state(self.project)
+        self.app = WorkbenchApplication(self.controller, state_provider=self.provider)
+        self.addCleanup(self.app.wait_for_idle, 3)
+
+    def run_job(self, action='preview_names'):
+        self.assertEqual(self.app.submit(action, {})[0], 202)
+        self.assertTrue(self.app.wait_for_idle(3))
+        self.assertFalse(self.app.busy)
+        return self.app.state()
+
+    def test_provider_exception_or_invalid_candidate_preserves_known_data_and_job_result(self):
+        before = self.app.state()
+
+        def denied():
+            raise PermissionError('PRIVATE-provider-error')
+
+        for provider in (denied, lambda: [], lambda: {'source': 'unavailable'},
+                         lambda: {**before['data'], 'playlists': [{}]},
+                         lambda: {**before['data'], 'history': []}):
+            with self.subTest(provider=provider):
+                self.app.state_provider = provider
+                state = self.run_job()
+                self.assertEqual(state['data'], before['data'])
+                self.assertEqual(state.get('local_records'), {'status': 'stale'})
+                self.assertEqual(state['job']['status'], 'completed')
+                self.assertEqual(state['job']['result']['status'], 'completed')
+                self.assertEqual(state['connection'], before['connection'])
+                self.assertEqual(state['recovery'], before['recovery'])
+                self.assertIn(self.warning, [entry['message'] for entry in state['job']['logs']])
+                self.assertNotIn('PRIVATE', json.dumps(state))
+
+    def test_directory_permission_failure_preserves_cache_and_source_bytes(self):
+        before = self.app.state()['data']
+        directory = self.project / 'artifacts' / classification_fixture.DIRECTORY
+        saved = directory.read_bytes()
+        original_open = Path.open
+        denied = []
+
+        def unreadable(path, *args, **kwargs):
+            if path.resolve() == directory:
+                denied.append(True)
+                raise PermissionError('PRIVATE-directory-error')
+            return original_open(path, *args, **kwargs)
+
+        for provider in (self.provider, None):
+            with self.subTest(default_provider=provider is None):
+                self.app.state_provider = provider
+                with patch.object(Path, 'open', unreadable):
+                    state = self.run_job()
+                self.assertEqual(state['data'], before)
+                self.assertEqual(state.get('local_records'), {'status': 'stale'})
+                self.assertEqual(directory.read_bytes(), saved)
+        self.assertTrue(denied)
+
+    def test_valid_completion_publishes_data_and_clears_stale_for_callable_and_default_provider(self):
+        self.assertEqual(self.app.state().get('local_records'), {'status': 'current'})
+        original = self.app.state()['data']
+        self.app.state_provider = lambda: []
+        self.run_job()
+        self.records.complete_evidence()
+        for provider in (self.provider, None):
+            with self.subTest(default_provider=provider is None):
+                self.app.state_provider = provider
+                state = self.run_job()
+                self.assertNotEqual(state['data'], original)
+                self.assertEqual(len(state['data']['playlists']), 8)
+                self.assertEqual(state['data']['history']['completed_count'], 7)
+                self.assertEqual(state.get('local_records'), {'status': 'current'})
+                self.assertNotIn(self.warning, [entry['message'] for entry in state['job']['logs']])
+
+    def test_confirmed_source_absence_can_publish_empty_after_completion(self):
+        for name in (classification_fixture.DIRECTORY, classification_fixture.PLAN, classification_fixture.REPORT):
+            (self.project / 'artifacts' / name).unlink()
+        for provider in (self.provider, None):
+            with self.subTest(default_provider=provider is None):
+                self.app.state_provider = provider
+                state = self.run_job()
+                self.assertEqual(state['data']['source'], 'empty')
+                self.assertEqual(state['data']['playlists'], [])
+                self.assertIsNone(state['data']['account'])
+                self.assertEqual(state.get('local_records'), {'status': 'current'})
+
+    def test_explicit_refresh_failure_preserves_stale_and_success_clears_it(self):
+        self.app.state_provider = lambda: []
+        self.run_job()
+        before = self.app.state()
+        self.assertEqual(before.get('local_records'), {'status': 'stale'})
+        self.assertEqual(self.app.refresh_local_records()[0], 503)
+        self.assertEqual(self.app.state(), before)
+        self.app.state_provider = self.provider
+        self.assertEqual(self.app.refresh_local_records()[0], 200)
+        self.assertEqual(self.app.state()['data'], before['data'])
+        self.assertEqual(self.app.state().get('local_records'), {'status': 'current'})
+
+    def test_slow_completion_keeps_state_attach_and_stop_responsive(self):
+        entered, release, observed = threading.Event(), threading.Event(), threading.Event()
+        before = self.app.state()['data']
+
+        def slow_provider():
+            entered.set()
+            if not release.wait(5):
+                raise RuntimeError('bounded fixture timeout')
+            return self.provider()
+
+        def observe():
+            self.app.state()
+            self.app.attach_page()
+            self.app.request_stop()
+            observed.set()
+
+        self.app.state_provider = slow_provider
+        self.assertEqual(self.app.submit('preview_names', {})[0], 202)
+        observer = threading.Thread(target=observe)
+        try:
+            self.assertTrue(entered.wait(2))
+            self.assertTrue(self.app.busy)
+            observer.start()
+            self.assertTrue(observed.wait(1), 'completion disk reads must not hold the state/stop lock')
+        finally:
+            release.set()
+            if observer.ident is not None:
+                observer.join(3)
+            self.assertTrue(self.app.wait_for_idle(3))
+        self.assertEqual(self.app.state()['data'], before)
+        self.assertEqual(self.app.state().get('local_records'), {'status': 'current'})
+        self.assertTrue(self.app.stop_requested)
+
+    def test_refresh_failure_does_not_clear_unknown_write_review_freeze(self):
+        self.controller.result = {'status': 'uncertain', 'write_attempted': True, 'outcome_known': False}
+        self.app.state_provider = lambda: []
+        state = self.run_job('rename')
+        self.assertEqual(state['job']['status'], 'uncertain')
+        self.assertTrue(state['job']['result']['write_attempted'])
+        self.assertFalse(state['job']['result']['outcome_known'])
+        self.assertEqual(state.get('local_records'), {'status': 'stale'})
+        self.assertTrue(self.app._review_required)
+        self.assertEqual(self.app._review_reasons, {'renames'})
+        self.app.state_provider = self.provider
+        self.assertEqual(self.app.refresh_local_records()[0], 200)
+        self.assertEqual(self.app.state().get('local_records'), {'status': 'current'})
+        self.assertTrue(self.app._review_required)
+        self.assertEqual(self.app._review_reasons, {'renames'})
+        self.assertEqual(self.app.submit('rename', {})[0], 409)
 
 
 if __name__ == '__main__':

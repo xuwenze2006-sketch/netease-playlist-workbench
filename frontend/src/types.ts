@@ -259,6 +259,7 @@ export interface LocalPreview {
   liked: { expected: number; observed: number | null; missing: number | null };
 }
 export interface WorkbenchState {
+  local_records?: { status: 'current' | 'stale' };
   update?: { status: UpdateStatus };
   recovery?: WriteRecovery;
   connection: { installed: boolean; configured: boolean; authorized: boolean | null };

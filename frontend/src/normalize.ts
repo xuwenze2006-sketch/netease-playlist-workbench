@@ -286,6 +286,9 @@ export function normalizeState(value: unknown): WorkbenchState {
   )
     throw new Error('invalid state');
   const account = data.account === null || data.account === undefined ? null : object(data.account);
+  const localRecords = root.local_records === undefined ? { status: 'current' } : object(root.local_records);
+  if (localRecords.status !== 'current' && localRecords.status !== 'stale')
+    throw new Error('invalid local records status');
   let updateStatus: UpdateStatus = 'none';
   if (root.update && typeof root.update === 'object' && !Array.isArray(root.update)) {
     const status = (root.update as ObjectValue).status;
@@ -294,6 +297,7 @@ export function normalizeState(value: unknown): WorkbenchState {
     }
   }
   return {
+    local_records: { status: localRecords.status },
     update: { status: updateStatus },
     recovery: recovery(root.recovery),
     connection: {

@@ -239,6 +239,7 @@ class WorkbenchApplication:
         self._revision = revision
         self._control_key = control_key
         self.update_status = "none"
+        self.local_records = {"status": "current"}
         self._review_required = False
         self._review_reasons = set()
         self.recovery = dict(_CLEAR_RECOVERY)
@@ -443,6 +444,7 @@ class WorkbenchApplication:
                     if self.busy or self.stopping or self.stop_requested or self.page_closing:
                         return 409, {'accepted': False, 'message': '已有任务正在运行或工作台正在关闭，请稍后刷新本地记录。'}
                     self.data = candidate
+                    self.local_records = {"status": "current"}
                     return 200, classification
             except Exception:
                 return 503, {'accepted': False, 'message': '本地记录暂时无法完整刷新，原页面资料已保留，请稍后重试。'}
@@ -523,7 +525,8 @@ class WorkbenchApplication:
             if self.job is not None and self.busy:
                 self.job["progress"]["elapsed_seconds"] = round(max(0, time.monotonic() - self.started), 2)
             return copy.deepcopy({"connection": self.connection, "data": self.data, "job": self.job,
-                                  "update": {"status": self.update_status}, "recovery": self.recovery})
+                                  "update": {"status": self.update_status}, "recovery": self.recovery,
+                                  "local_records": self.local_records})
 
     def touch(self):
         with self.lock:
@@ -664,7 +667,10 @@ class WorkbenchApplication:
                     result["record_saved"] = False
             payload.clear()
         local_connection = self._local_connection() if credentials_started else None
-        data = self._local_data()
+        try:
+            data = self._strict_local_data()
+        except Exception:
+            data = None
         with self.lock:
             if credentials_started:
                 self.connection.update(local_connection)
@@ -681,7 +687,12 @@ class WorkbenchApplication:
             self.job["result"] = result
             self.job["progress"]["elapsed_seconds"] = round(max(0, time.monotonic() - self.started), 2)
             self._log(result["message"], "error" if status in {"failed", "uncertain", "blocked"} else "info")
-            self.data = data
+            if data is None:
+                self.local_records = {"status": "stale"}
+                self._log("本地记录暂时无法完整刷新，仍显示上次读取的资料，请稍后重试。")
+            else:
+                self.data = data
+                self.local_records = {"status": "current"}
             self.busy = False
             if action in _WRITE_ACTIONS and self._needs_review(self.job):
                 self._review_required = True

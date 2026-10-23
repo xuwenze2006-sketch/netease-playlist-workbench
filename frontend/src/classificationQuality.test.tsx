@@ -609,6 +609,8 @@ describe('classification review and local corrections', () => {
 
   it.each(['stay', 'focus', 'wheel'] as const)('recovers a shrinking review queue after a last-page save without losing user intent (%s)', async (movement) => {
     let accepted = false;
+    let finishFilter!: () => void;
+    let filterHeld = false;
     vi.mocked(fetchClassification).mockImplementation(async (_session, request) => {
       const result = page(accepted ? 1 : 0);
       result.filters = request;
@@ -618,11 +620,23 @@ describe('classification review and local corrections', () => {
         next_offset: !accepted && request.offset === 0 ? 50 : null };
       // Only the last page's one row disappears after saving its draft.
       if (accepted && request.offset === 50) result.records = [];
+      if (!filterHeld && request.review === 'undrafted_review' && request.offset === 0) {
+        filterHeld = true;
+        return await new Promise<ClassificationPage>((resolve) => { finishFilter = () => resolve(result); });
+      }
       return result;
     });
     await act(async () => { render(<ClassificationPanel />); });
     fireEvent.click(screen.getByRole('button', { name: '查看需复核且无草稿' }));
     await waitFor(() => expect(vi.mocked(fetchClassification).mock.lastCall?.[1].review).toBe('undrafted_review'));
+    // A started request does not mean the selected queue has committed to the DOM.
+    expect(screen.getByRole('region', { name: '逐曲分类结果' }).getAttribute('aria-busy')).toBe('true');
+    expect(screen.queryByRole('button', { name: '下一页' })).toBeNull();
+    await act(async () => { finishFilter(); });
+    await waitFor(() => {
+      expect(screen.getByRole('region', { name: '逐曲分类结果' }).getAttribute('aria-busy')).toBe('false');
+      expect(screen.getByRole('button', { name: '下一页' })).toHaveProperty('disabled', false);
+    });
     fireEvent.click(screen.getByRole('button', { name: '下一页' }));
     await screen.findByText('第 2 页，共 2 页');
     await edit();

@@ -1081,6 +1081,19 @@ export default function App() {
               </p>
             </section>
           )}
+          {state?.local_records?.status === 'stale' && (
+            <div className="message-banner notice" role="status" aria-label="本地记录读取状态">
+              <Icon name="file" size={17} />
+              <span>
+                <strong>本地记录暂时无法完整刷新，仍显示上次读取的资料。</strong>
+                <br />
+                前往分类成果，点击“刷新分类记录”重新读取本地记录。
+              </span>
+              <a className="text-link" href="#classification" onClick={() => setPage('classification')}>
+                前往分类成果
+              </a>
+            </div>
+          )}
           {visibleError && (
             <div className="message-banner error" role="alert">
               <span>
