@@ -11,6 +11,7 @@ _CREDIT = re.compile(
     r'composer|lyricist|arranger|producer|writer|written|vocal|lyrics|music|'
     r'mixed|mixing|mastered|recorded|recording|copyright|all rights)\s*[:：-]', re.I,
 )
+_INSTRUMENTAL_LINE = re.compile(r'纯音乐\s*[,，、:：;；。\-—]?\s*(?:请欣赏|无歌词)\s*[。.!！]*')
 _YUE = set('嘅唔佢啲咗冇嘢喺嗰嚟攰嘥瞓睇俾畀咁係')
 _FUNCTIONS = {
     'en': 'the and you your i my me we our it is are was were that this with for to of in on don can will what when how not love baby',
@@ -37,14 +38,17 @@ def derive_lyric_features(data):
     if type(lyric) is not str or len(lyric) > 300000:
         raise ValueError('歌词资料格式不可用。')
     lines = []
+    instrumental_marker = data.get('pureMusic') is True
     for raw in lyric.splitlines():
         text = _STAMP.sub('', raw).strip()
         if not text or _CREDIT.match(text):
             continue
+        # A provider description is evidence, not lyric text. A sentence that
+        # merely contains those words must still be retained as body text.
+        if _INSTRUMENTAL_LINE.fullmatch(text):
+            instrumental_marker = True
+            continue
         lines.append(text)
-    instrumental_marker = data.get('pureMusic') is True or (
-        len(lines) <= 3 and any('纯音乐' in x and ('欣赏' in x or '无歌词' in x) for x in lines)
-    )
     text = unicodedata.normalize('NFKC', '\n'.join(lines)).casefold()
     scripts = Counter()
     for char in text:
@@ -66,26 +70,25 @@ def derive_lyric_features(data):
     words = Counter(re.findall(r"[a-zÀ-ÖØ-öø-ÿ]+", text))
     scores = {language: sum(words[w] for w in terms) for language, terms in _FUNCTIONS.items()}
     hints = []
-    if not instrumental_marker:
-        if scripts['kana'] >= 6:
-            hints.append('ja')
-        if scripts['hangul'] >= 10:
-            hints.append('ko')
-        if scripts['han'] >= 20 and scripts['kana'] < 6:
-            hints.append('zh_or_yue')
-        if scripts['cyrillic'] >= 10:
-            hints.append('ru_or_other_cyrillic')
-        if scripts['arabic'] >= 10 or scripts['thai'] >= 10:
-            hints.append('other_script')
-        ranked = sorted(scores, key=scores.get, reverse=True)
-        if scripts['latin'] >= 50:
-            best = ranked[0]
-            if scores[best] >= 8 and scores[best] >= scores[ranked[1]] * 1.4:
-                hints.append(best)
-            else:
-                hints.append('latin_undetermined')
+    if scripts['kana'] >= 6:
+        hints.append('ja')
+    if scripts['hangul'] >= 10:
+        hints.append('ko')
+    if scripts['han'] >= 20 and scripts['kana'] < max(6, scripts['han'] * .04):
+        hints.append('zh_or_yue')
+    if scripts['cyrillic'] >= 10:
+        hints.append('ru_or_other_cyrillic')
+    if scripts['arabic'] >= 10 or scripts['thai'] >= 10:
+        hints.append('other_script')
+    ranked = sorted(scores, key=scores.get, reverse=True)
+    if scripts['latin'] >= 50:
+        best = ranked[0]
+        if scores[best] >= 8 and scores[best] >= scores[ranked[1]] * 1.4:
+            hints.append(best)
+        else:
+            hints.append('latin_undetermined')
     return {
-        'has_original_lyric_text': bool(lines) and not instrumental_marker,
+        'has_original_lyric_text': bool(lines),
         'provider_no_lyric': data.get('noLyric') is True,
         'instrumental_evidence': instrumental_marker,
         'original_line_count': len(lines),

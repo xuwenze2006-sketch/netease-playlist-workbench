@@ -138,10 +138,10 @@ class BuildClassificationPlanTests(unittest.TestCase):
                 self.invoke(root)
                 report = json.loads((root / 'artifacts/全库分类-逐曲结果.json').read_text(encoding='utf-8'))
                 record = report['records'][0]
-                self.assertEqual(record['language'], '国语' if model is None else '英语')
+                self.assertEqual(record['language'], '待辨识' if model is None else '英语')
                 self.assertNotIn('不应采用', record['language_evidence_note'])
-                self.assertIs(record['review_note'], model is not None)
-                self.assertEqual(report['summary']['review_note_count'], 0 if model is None else 1)
+                self.assertIs(record['review_note'], True)
+                self.assertEqual(report['summary']['review_note_count'], 1)
 
     def conflict_fixture(self, conflicts, *, entry=None, model='other', hints=None):
         root = self.fixture(entry or {'position': 1, 'language': None}, model=model)

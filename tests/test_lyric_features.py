@@ -46,6 +46,43 @@ class LyricFeatureTests(unittest.TestCase):
             with self.subTest(raw_type=type(raw).__name__), self.assertRaises(ValueError):
                 derive_lyric_features(raw)
 
+    def test_provider_marker_does_not_erase_body_evidence(self):
+        result = derive_lyric_features({'pureMusic': True, 'lyric': 'I love you and you are with me forever\n' * 10})
+        self.assertTrue(result['instrumental_evidence'])
+        self.assertTrue(result['has_original_lyric_text'])
+        self.assertEqual(result['original_line_count'], 10)
+        self.assertIn('en', result['language_hints'])
+
+    def test_standalone_marker_is_separated_from_body(self):
+        body = '君のことを思い出していつも歌います世界未来\n' * 5
+        result = derive_lyric_features({'lyric': '[00:00]纯音乐，请欣赏\n' + body})
+        body_only = derive_lyric_features({'lyric': body})
+        self.assertTrue(result['instrumental_evidence'])
+        self.assertTrue(result['has_original_lyric_text'])
+        self.assertEqual(result['original_line_count'], 5)
+        self.assertEqual(result['script_counts'], body_only['script_counts'])
+        self.assertEqual(result['language_hints'], ['ja'])
+
+    def test_instrumental_description_inside_lyric_is_not_a_marker(self):
+        result = derive_lyric_features({'lyric': '这首纯音乐请欣赏我的歌声，故事还没有结束'})
+        self.assertFalse(result['instrumental_evidence'])
+        self.assertTrue(result['has_original_lyric_text'])
+
+    def test_marker_only_has_no_body_lines_or_script_evidence(self):
+        result = derive_lyric_features({'lyric': '[00:00]纯音乐，请欣赏\n[00:01]纯音乐，无歌词'})
+        self.assertTrue(result['instrumental_evidence'])
+        self.assertFalse(result['has_original_lyric_text'])
+        self.assertEqual(result['original_line_count'], 0)
+        self.assertEqual(sum(result['script_counts'].values()), 0)
+
+    def test_small_kana_fragment_does_not_hide_dominant_han(self):
+        result = derive_lyric_features({'lyric': ('天下苍生都在等待新的歌声\n' * 80) + 'サンプルサンプル'})
+        self.assertIn('zh_or_yue', result['language_hints'])
+
+    def test_unknown_latin_body_keeps_an_explicit_undetermined_hint(self):
+        result = derive_lyric_features({'lyric': 'aurinko paistaa hiljaa taivaan alla sydän laulaa\n' * 10})
+        self.assertIn('latin_undetermined', result['language_hints'])
+
 
 if __name__ == '__main__':
     unittest.main()
