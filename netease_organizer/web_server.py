@@ -475,6 +475,20 @@ class WorkbenchApplication:
         if result.get("status") == "authorization_pending":
             self.connection["authorized"] = False
 
+    def _local_connection(self):
+        """Failed local verification cannot preserve a claim that setup is ready."""
+        safe = {"configured": False}
+        try:
+            raw = self.controller.local_connection_state()
+            if isinstance(raw, dict):
+                if type(raw.get("installed")) is bool:
+                    safe["installed"] = raw["installed"]
+                    if type(raw.get("configured")) is bool:
+                        safe["configured"] = raw["configured"]
+        except Exception:
+            pass
+        return safe
+
     def _log(self, message, level="info"):
         self.job["logs"].append({"time": datetime.now(timezone.utc).isoformat(), "level": level, "message": message})
         del self.job["logs"][:-100]
@@ -624,11 +638,17 @@ class WorkbenchApplication:
         return getattr(self.controller, method)()
 
     def _work(self, action, payload):
+        credentials_started = False
         try:
             with self.lock:
                 paused = self.pause_requested
                 if not paused:
                     self.job["status"] = "running"
+                    if action == "save_credentials":
+                        credentials_started = True
+                        self.connection["authorized"] = None
+                        self.login_started = None
+                        self.startup_login_job = self.startup_login_at = None
             raw = {"status": "paused"} if paused else self._invoke(action, payload)
             sensitive = (payload["app_id"], payload["private_key"]) if action == "save_credentials" else ()
             result = _safe_result(raw, action, self.project, sensitive)
@@ -643,12 +663,15 @@ class WorkbenchApplication:
                 if result["status"] not in {"completed", "partial"}:
                     result["record_saved"] = False
             payload.clear()
+        local_connection = self._local_connection() if credentials_started else None
         data = self._local_data()
         with self.lock:
-            self._update_connection(result)
-            if action == "save_credentials" and result.get("status") == "credentials_saved":
+            if credentials_started:
+                self.connection.update(local_connection)
                 self.connection["authorized"] = None
                 self.login_started = None
+            else:
+                self._update_connection(result)
             if action == "login":
                 self.login_started = time.monotonic() if result.get("url") and not self.pause_requested else None
             elif result.get("authorized") is True or result.get("status") == "authorization_expired":

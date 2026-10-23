@@ -542,9 +542,14 @@ class Organizer:
             raise OrganizerError("请先申请开放平台 App ID 和私钥，并在程序中保存凭证。",
                                  code="credentials_required")
 
+    def local_connection_state(self):
+        """Read installation/configuration only; never start an official CLI process."""
+        return {"installed": self.cli.installed(), "configured": self.cli.configured()}
+
     @_public
     def doctor(self):
-        installed, configured = self.cli.installed(), self.cli.configured()
+        local = self.local_connection_state()
+        installed, configured = local["installed"], local["configured"]
         version = self.cli.version() if installed else None
         if installed:
             message = f"官方 CLI {version} 已安装。" + (

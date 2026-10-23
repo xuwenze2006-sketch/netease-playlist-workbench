@@ -48,6 +48,9 @@ class FakeController:
         self.pause.set()
         return {"message": SECRET, "status": "pause_requested"}
 
+    def local_connection_state(self):
+        return {"installed": True, "configured": True}
+
     def doctor(self):
         self.calls.append(("doctor", {}))
         return {"status": "credentials_saved", "installed": True,
