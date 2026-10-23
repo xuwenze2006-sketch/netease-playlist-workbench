@@ -1,6 +1,7 @@
 import type {
   Action,
   AcceptedAction,
+  PauseAcknowledgement,
   WorkbenchState,
   LocalTrackPage,
   MetadataFilter,
@@ -35,6 +36,7 @@ export class ClassificationReadError extends LocalApiError {
 }
 
 const REMOVED_PLAYLIST_MESSAGE = '该歌单已不在本地目录中，请更新页面后重试。';
+const PAUSE_UNCONFIRMED_MESSAGE = '暂停请求未确认，请查看当前任务状态后重试。';
 class RemovedLocalPlaylistError extends LocalApiError {
   constructor() {
     super(REMOVED_PLAYLIST_MESSAGE);
@@ -107,6 +109,7 @@ async function requestJson<T>(
       );
     }
     if (!response.ok) {
+      if (path === '/api/pause') throw new LocalApiError(PAUSE_UNCONFIRMED_MESSAGE);
       if (
         response.status === 503 &&
         body === undefined &&
@@ -276,8 +279,14 @@ export async function postAction(
   );
 }
 
-export function pauseJob(session: string, keepalive = false): Promise<AcceptedAction> {
-  return requestJson(session, '/api/pause', {}, undefined, keepalive);
+export async function pauseJob(session: string, keepalive = false): Promise<PauseAcknowledgement> {
+  const value = await requestJson<unknown>(session, '/api/pause', {}, undefined, keepalive);
+  if (value && typeof value === 'object' && !Array.isArray(value) && 'status' in value) {
+    if (value.status === 'pause_requested') return { status: 'pause_requested' };
+    if (value.status === 'failed' || value.status === 'blocked')
+      throw new LocalApiError(PAUSE_UNCONFIRMED_MESSAGE);
+  }
+  throw new LocalApiError(PAUSE_UNCONFIRMED_MESSAGE, true);
 }
 
 export function closeWorkbench(session: string): Promise<AcceptedAction> {

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { fetchState, LocalApiError, postAction } from './api';
+import { fetchState, LocalApiError, pauseJob, postAction } from './api';
 
 const emptyState = {
   connection: { installed: true, configured: false, authorized: null },
@@ -8,6 +8,86 @@ const emptyState = {
 };
 
 describe('local session API', () => {
+  it.each([false, true])('whitelists an acknowledged pause while preserving its request contract (keepalive=%s)', async (keepalive) => {
+    const fetcher = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({
+      status: 'pause_requested', message: 'PRIVATE-RAW', private_key: 'PRIVATE-RAW', accepted: true,
+    }) });
+    vi.stubGlobal('fetch', fetcher);
+    expect(await pauseJob('pause-session', keepalive)).toEqual({ status: 'pause_requested' });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher.mock.calls[0][0]).toBe('/api/pause');
+    expect(fetcher.mock.calls[0][1]).toMatchObject({
+      method: 'POST', body: '{}', keepalive, cache: 'no-store', credentials: 'omit',
+      headers: { 'X-Organizer-Session': 'pause-session', 'Content-Type': 'application/json' },
+    });
+  });
+  it.each(['failed', 'blocked'])('rejects a successful HTTP pause response with explicit %s status safely', async (status) => {
+    const fetcher = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({
+      status, message: 'PRIVATE-RAW', private_key: 'PRIVATE-RAW',
+    }) });
+    vi.stubGlobal('fetch', fetcher);
+    const failure = await pauseJob('test-session').catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(LocalApiError);
+    expect(failure).toMatchObject({ acceptanceUnknown: false });
+    expect((failure as Error).message).toContain('暂停请求未确认');
+    expect(JSON.stringify(failure)).not.toContain('PRIVATE-RAW');
+    expect((failure as Error).message).not.toContain('PRIVATE-RAW');
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+  it.each([null, [], [{ status: 'pause_requested' }], 'pause_requested', {},
+    { status: null }, { status: true }, { status: 'paused' }, { status: 'PAUSE_REQUESTED' },
+    { accepted: true }, { status: 'PRIVATE-RAW', message: 'PRIVATE-RAW' }])(
+    'does not acknowledge a malformed or unknown pause response: %j', async (reply) => {
+      const fetcher = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => reply });
+      vi.stubGlobal('fetch', fetcher);
+      const failure = await pauseJob('test-session').catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(LocalApiError);
+      expect(failure).toMatchObject({ acceptanceUnknown: true });
+      expect((failure as Error).message).toContain('暂停请求未确认');
+      expect((failure as Error).message).not.toContain('PRIVATE-RAW');
+      expect(fetcher).toHaveBeenCalledTimes(1);
+    },
+  );
+  it.each([409, 503])('keeps HTTP %s pause failures safe without retrying or retaining the raw message', async (status) => {
+    const fetcher = vi.fn().mockResolvedValue({ ok: false, status, json: async () => ({
+      status: 'failed', message: 'PRIVATE-RAW', private_key: 'PRIVATE-RAW',
+    }) });
+    vi.stubGlobal('fetch', fetcher);
+    const failure = await pauseJob('test-session').catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(LocalApiError);
+    expect(failure).toMatchObject({ acceptanceUnknown: false });
+    expect((failure as Error).message).toContain('暂停请求未确认');
+    expect((failure as Error).message).not.toContain('PRIVATE-RAW');
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+  it.each([401, 403])('preserves the fixed session refresh error for an HTTP %s pause rejection', async (status) => {
+    const fetcher = vi.fn().mockResolvedValue({ ok: false, status, json: async () => ({ message: 'PRIVATE-RAW' }) });
+    vi.stubGlobal('fetch', fetcher);
+    await expect(pauseJob('old-session')).rejects.toMatchObject({ acceptanceUnknown: false,
+      message: expect.stringContaining('页面会话已更新') });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+  it('retains unknown pause confirmation after a network failure without retrying', async () => {
+    const fetcher = vi.fn().mockRejectedValue(new Error('PRIVATE-RAW'));
+    vi.stubGlobal('fetch', fetcher);
+    await expect(pauseJob('test-session')).rejects.toMatchObject({ acceptanceUnknown: true,
+      message: expect.stringContaining('与本机服务的连接中断') });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+  it('ends a stalled pause at the existing deadline without retrying', async () => {
+    vi.useFakeTimers();
+    const fetcher = vi.fn(async (_path: string, options: RequestInit) => await new Promise((_resolve, reject) => {
+      options.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+    }));
+    vi.stubGlobal('fetch', fetcher);
+    const pending = pauseJob('test-session');
+    const rejection = expect(pending).rejects.toMatchObject({ acceptanceUnknown: true,
+      message: expect.stringContaining('等待响应超时') });
+    await vi.advanceTimersByTimeAsync(10000);
+    await rejection;
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
   it('gets only local state with the injected session header', async () => {
     const fetcher = vi.fn().mockResolvedValue({ ok: true, json: async () => emptyState });
     vi.stubGlobal('fetch', fetcher);

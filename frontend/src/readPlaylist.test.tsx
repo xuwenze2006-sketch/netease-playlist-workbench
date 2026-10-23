@@ -105,7 +105,7 @@ function prepare(
         ...readJob('paused'),
         result: { ...savedResult, status: 'paused', record_saved: false },
       } as typeof state.job;
-      return { ok: true, json: async () => ({ accepted: true }) };
+      return { ok: true, json: async () => ({ status: 'pause_requested' }) };
     }
     if (url.includes('/tracks'))
       return {

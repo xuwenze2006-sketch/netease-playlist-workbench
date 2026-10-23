@@ -508,7 +508,7 @@ class WorkbenchApplication:
                 progress['stage'] = 'classification_preflight'
             else:
                 progress.pop('stage', None)
-            if not self.pause_requested:
+            if self.job["status"] != "pause_requested":
                 progress["label"] = label
             for key in ("completed_count", "total_count"):
                 if _count(event.get(key)):
@@ -705,16 +705,21 @@ class WorkbenchApplication:
         with self.lock:
             if session is not None and not self.valid_session(session):
                 return {"status": "blocked", "message": "页面会话已更新，本次暂停请求未执行。"}
+            # Keep stop intent even if the controller sets its Event and then
+            # raises; only normal return confirms the public pause status.
             self.pause_requested = True
             self.login_started = None
+            try:
+                self.controller.request_pause()
+            except Exception:
+                result = {"status": "failed", "message": "暂停请求未能确认，当前任务仍需完成核对。"}
+                if self.busy:
+                    self._log(result["message"], "error")
+                return result
             if self.busy:
                 self.job["status"] = "pause_requested"
                 self.job["progress"]["label"] = "正在暂停，等待当前请求核对完成"
                 self._log("已请求暂停；当前请求完成核对后停止。")
-            try:
-                self.controller.request_pause()
-            except Exception:
-                return {"status": "failed", "message": "暂停请求未能确认，当前任务仍需完成核对。"}
         return {"status": "pause_requested", "message": "已请求暂停；当前请求完成核对后停止。"}
 
     def close_page(self, session):
@@ -724,6 +729,8 @@ class WorkbenchApplication:
             if self.valid_session(session):
                 self.page_closing = True
             result = self.request_pause()
+            if result["status"] == "failed":
+                return 503, result
             return 200, {**result, "message": "页面已离开，当前任务会完成核对后暂停。"}
 
     def request_stop(self):
@@ -1084,7 +1091,7 @@ class _WorkbenchHandler(BaseHTTPRequestHandler):
                     status, result = self.server.application.close_page(self._request_session)
                 else:
                     result = self.server.application.request_pause(session=self._request_session)
-                    status = 409 if result["status"] == "blocked" else 200
+                    status = {"blocked": 409, "failed": 503}.get(result["status"], 200)
                 self._json(status, result)
                 return
             validated = _valid_action(raw)

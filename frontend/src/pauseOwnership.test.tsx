@@ -10,14 +10,14 @@ const idle = {
   },
   job: null,
 };
-const snapshot = (id: string, status: 'running' | 'paused') => ({
+const snapshot = (id: string, status: 'running' | 'pause_requested' | 'paused') => ({
   ...idle,
   job: {
     id, action: 'preview_names', label: '读取歌单名称', status, logs: [],
-    result: status === 'running' ? null : { status: 'paused', message: '旧读取任务已暂停。' },
+    result: status === 'paused' ? { status: 'paused', message: '旧读取任务已暂停。' } : null,
   },
 });
-const response = (value: unknown) => ({ ok: true, json: async () => value });
+const response = (value: unknown) => ({ ok: true, status: 200, json: async () => value });
 
 async function pendingPause() {
   vi.useFakeTimers();
@@ -41,13 +41,19 @@ async function pendingPause() {
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: '暂停任务' })); });
   return {
     fetcher,
+    publishStatus: async (status: 'running' | 'pause_requested' | 'paused') => {
+      current = snapshot('old-job', status);
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    },
     publishPaused: async () => {
       current = snapshot('old-job', 'paused');
       await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
     },
-    settle: async (outcome: 'success' | 'failure') => {
+    settle: async (outcome: 'success' | 'failure' | 'rejected' | 'malformed') => {
       await act(async () => {
         if (outcome === 'success') finish(response({ status: 'pause_requested' }));
+        else if (outcome === 'rejected') finish(response({ status: 'failed', message: 'PRIVATE-RAW' }));
+        else if (outcome === 'malformed') finish(response({ accepted: true, message: 'PRIVATE-RAW' }));
         else fail(new Error('lost old pause reply'));
       });
     },
@@ -55,7 +61,7 @@ async function pendingPause() {
 }
 
 describe('pause response ownership', () => {
-  it.each(['success', 'failure'] as const)('does not let an old pause %s replace a newer task result', async (outcome) => {
+  it.each(['success', 'failure', 'rejected', 'malformed'] as const)('does not let an old pause %s replace a newer task result', async (outcome) => {
     const backend = await pendingPause();
     await backend.publishPaused();
     const start = screen.getByRole<HTMLButtonElement>('button', { name: '更新歌单清单' });
@@ -70,7 +76,7 @@ describe('pause response ownership', () => {
     expect(backend.fetcher.mock.calls.filter(([url]) => url === '/api/pause')).toHaveLength(1);
   });
 
-  it.each(['success', 'failure'] as const)('keeps a confirmed terminal result after its late pause %s', async (outcome) => {
+  it.each(['success', 'failure', 'rejected', 'malformed'] as const)('keeps a confirmed terminal result after its late pause %s', async (outcome) => {
     const backend = await pendingPause();
     await backend.publishPaused();
     expect(screen.getByRole('status').textContent).toBe('旧读取任务已暂停。');
@@ -85,6 +91,35 @@ describe('pause response ownership', () => {
     await backend.settle('success');
     expect(screen.getByRole('status').textContent).toContain('已请求暂停');
     expect(screen.getByRole<HTMLButtonElement>('button', { name: '正在暂停…' }).disabled).toBe(true);
+  });
+
+  it.each(['rejected', 'malformed'] as const)('shows a current %s pause response as a safe error and permits explicit retry', async (outcome) => {
+    const backend = await pendingPause();
+    await backend.settle(outcome);
+    expect(screen.getByRole('alert').textContent).toContain('暂停请求未确认');
+    expect(screen.getByRole('alert').textContent).not.toContain('PRIVATE-RAW');
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: '暂停任务' }).disabled).toBe(false);
+    await backend.publishStatus('running');
+    expect(screen.getByRole('alert').textContent).toContain('暂停请求未确认');
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: '暂停任务' }).disabled).toBe(false);
+    expect(backend.fetcher.mock.calls.filter(([url]) => url === '/api/pause')).toHaveLength(1);
+    expect(backend.fetcher.mock.calls.filter(([url]) => url === '/api/actions')).toHaveLength(0);
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '暂停任务' })); });
+    expect(screen.queryByRole('alert')).toBeNull();
+    await backend.settle('success');
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByRole('status').textContent).toContain('已请求暂停');
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: '正在暂停…' }).disabled).toBe(true);
+    await backend.publishStatus('pause_requested');
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: '正在暂停…' }).disabled).toBe(true);
+    await backend.publishPaused();
+    expect(screen.getByRole('status').textContent).toBe('旧读取任务已暂停。');
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: '更新歌单清单' }).disabled).toBe(false);
+    expect(backend.fetcher.mock.calls.filter(([url]) => url === '/api/pause')).toHaveLength(2);
+    expect(backend.fetcher.mock.calls.filter(([url]) => url === '/api/actions')).toHaveLength(0);
   });
 
   it('keeps a current pause failure visible and permits an explicit pause attempt', async () => {

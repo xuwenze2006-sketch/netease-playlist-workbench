@@ -8,6 +8,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 try:
     from netease_organizer.web_server import create_server, shutdown_server
@@ -588,6 +589,263 @@ class WebServerTests(unittest.TestCase):
         self.assertEqual(job_state["status"], "paused")
         self.assertEqual(job_state["result"]["completed_count"], 1)
         self.assertEqual(len(self.controller.prepared), 1)
+
+    def test_pause_failure_active_task_keeps_running_and_safe_progress(self):
+        self.controller.block = True
+        self.assertEqual(self.submit("rename")[0], 202)
+        self.assertTrue(self.controller.started.wait(1))
+        app = self.server.application
+        app._review_required = True
+        app._review_reasons = {"renames"}
+        recovery = copy.deepcopy(app.recovery)
+        prepared = list(self.controller.prepared)
+        pause_calls = []
+
+        def failed_pause():
+            pause_calls.append(True)
+            raise RuntimeError(SECRET)
+
+        self.controller.request_pause = failed_pause
+        for expected_calls in (1, 2):
+            status, _, body = self.request("POST", "/api/pause", {})
+            result = json.loads(body)
+            state = self.state()
+            with self.subTest(attempt=expected_calls):
+                self.assertEqual(status, 503)
+                self.assertEqual(result["status"], "failed")
+                self.assertIn("未能确认", result["message"])
+                self.assertTrue(app.pause_requested)
+                self.assertFalse(self.controller.pause.is_set())
+                self.assertTrue(app.busy)
+                self.assertEqual(state["job"]["status"], "running")
+                self.assertNotIn("已请求暂停", json.dumps(state, ensure_ascii=False))
+                self.assertEqual(state["job"]["logs"][-1]["level"], "error")
+                self.assertNotIn(SECRET, body.decode() + json.dumps(state))
+                self.assertEqual(len(pause_calls), expected_calls)
+                self.assertEqual(self.controller.prepared, prepared)
+                self.assertTrue(app._review_required)
+                self.assertEqual(app._review_reasons, {"renames"})
+                self.assertEqual(app.recovery, recovery)
+        self.controller.listener({"phase": "rename", "completed_count": 2, "total_count": 3})
+        job = self.state()["job"]
+        self.assertEqual(job["progress"]["label"], "修改名称")
+        self.assertEqual(job["progress"]["completed_count"], 2)
+        self.assertEqual(self.submit("artists", {"accept_default_visibility": True})[0], 409)
+        self.assertEqual([action for action, _ in self.controller.calls], ["doctor", "rename"])
+
+    def test_pause_failure_after_setting_signal_preserves_it_until_real_pause(self):
+        self.controller.block = True
+        self.assertEqual(self.submit("rename")[0], 202)
+        self.assertTrue(self.controller.started.wait(1))
+        prepared = list(self.controller.prepared)
+
+        def partial_pause():
+            self.controller.pause.set()
+            raise RuntimeError(SECRET)
+
+        self.controller.request_pause = partial_pause
+        status, _, body = self.request("POST", "/api/pause", {})
+        self.assertEqual(status, 503)
+        self.assertEqual(json.loads(body)["status"], "failed")
+        self.assertTrue(self.controller.pause.is_set())
+        self.assertEqual(self.state()["job"]["status"], "running")
+        self.assertEqual(self.controller.prepared, prepared)
+        self.controller.release.set()
+        self.assertTrue(self.server.application.wait_for_idle(1))
+        job = self.state()["job"]
+        self.assertEqual(job["status"], "paused")
+        self.assertEqual(job["result"]["completed_count"], 1)
+        self.assertTrue(self.controller.pause.is_set())
+        self.assertEqual([action for action, _ in self.controller.calls], ["doctor", "rename"])
+
+    def test_pause_failure_queued_task_never_invokes_even_without_controller_signal(self):
+        app = self.server.application
+        original_work = app._work
+        for action in ("rename", "artists", "save_credentials"):
+            for set_signal in (False, True):
+                with self.subTest(action=action, signal=set_signal):
+                    entered, release = threading.Event(), threading.Event()
+
+                    def delayed_work(*args):
+                        entered.set()
+                        if release.wait(2):
+                            original_work(*args)
+
+                    def failed_pause():
+                        if set_signal:
+                            self.controller.pause.set()
+                        raise RuntimeError(SECRET)
+
+                    calls = list(self.controller.calls)
+                    app.connection["authorized"] = True
+                    connection = copy.deepcopy(app.connection)
+                    payload = {"app_id": "replacement", "private_key": SECRET} if action == "save_credentials" else {}
+                    with patch.object(app, "_work", delayed_work), patch.object(self.controller, "request_pause", failed_pause):
+                        try:
+                            self.assertEqual(app.submit(action, payload)[0], 202)
+                            self.assertTrue(entered.wait(1))
+                            result = app.request_pause()
+                            self.assertEqual(result["status"], "failed")
+                            self.assertEqual(app.state()["job"]["status"], "queued")
+                            self.assertTrue(app.pause_requested)
+                        finally:
+                            release.set()
+                        self.assertTrue(app.wait_for_idle(1))
+                    self.assertEqual(app.state()["job"]["status"], "paused")
+                    self.assertEqual(self.controller.calls, calls)
+                    self.assertEqual(app.connection, connection)
+                    self.assertEqual(payload, {})
+
+    def test_pause_failure_manual_retry_acknowledges_only_after_normal_return(self):
+        self.controller.block = True
+        self.assertEqual(self.submit("rename")[0], 202)
+        self.assertTrue(self.controller.started.wait(1))
+        original_pause = self.controller.request_pause
+        calls = []
+
+        def failed_pause():
+            calls.append(True)
+            raise RuntimeError(SECRET)
+
+        self.controller.request_pause = failed_pause
+        self.assertEqual(self.request("POST", "/api/pause", {})[0], 503)
+        self.assertEqual(self.state()["job"]["status"], "running")
+        self.assertEqual(calls, [True])
+        self.controller.request_pause = original_pause
+        status, _, body = self.request("POST", "/api/pause", {})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["status"], "pause_requested")
+        self.assertEqual(self.state()["job"]["status"], "pause_requested")
+        self.assertTrue(self.server.application.busy)
+        self.controller.release.set()
+        self.assertTrue(self.server.application.wait_for_idle(1))
+        self.assertEqual(self.state()["job"]["status"], "paused")
+        self.assertEqual([action for action, _ in self.controller.calls], ["doctor", "rename"])
+
+    def test_pause_failure_does_not_revoke_an_earlier_acknowledgement(self):
+        self.controller.block = True
+        self.assertEqual(self.submit("rename")[0], 202)
+        self.assertTrue(self.controller.started.wait(1))
+        self.assertEqual(self.request("POST", "/api/pause", {})[0], 200)
+        acknowledged = self.state()["job"]
+
+        def failed_pause():
+            raise RuntimeError(SECRET)
+
+        self.controller.request_pause = failed_pause
+        for _ in range(2):
+            self.assertEqual(self.request("POST", "/api/pause", {})[0], 503)
+            self.controller.listener({"phase": "rename", "completed_count": 2, "total_count": 3})
+            job = self.state()["job"]
+            self.assertEqual(job["status"], "pause_requested")
+            self.assertEqual(job["progress"]["label"], acknowledged["progress"]["label"])
+            self.assertEqual(job["progress"]["completed_count"], 2)
+            self.assertTrue(self.controller.pause.is_set())
+        self.controller.release.set()
+        self.assertTrue(self.server.application.wait_for_idle(1))
+        self.assertEqual(self.state()["job"]["status"], "paused")
+
+    def test_pause_failure_still_serializes_explicit_new_operation_reset(self):
+        entered, release, submitted = threading.Event(), threading.Event(), threading.Event()
+        results = []
+
+        def delayed_failure():
+            entered.set()
+            if not release.wait(2):
+                raise RuntimeError("pause test gate expired")
+            self.controller.pause.set()
+            raise RuntimeError(SECRET)
+
+        self.controller.request_pause = delayed_failure
+        pause_thread = threading.Thread(target=lambda: results.append(self.server.application.request_pause()))
+        pause_thread.start()
+        self.assertTrue(entered.wait(1))
+
+        def submit_new():
+            results.append(self.server.application.submit("rename", {}))
+            submitted.set()
+
+        submit_thread = threading.Thread(target=submit_new)
+        submit_thread.start()
+        try:
+            self.assertFalse(submitted.wait(0.03))
+            self.assertEqual(self.controller.prepared, [])
+        finally:
+            release.set()
+            pause_thread.join(1)
+            submit_thread.join(1)
+        self.assertFalse(pause_thread.is_alive())
+        self.assertFalse(submit_thread.is_alive())
+        self.assertTrue(self.server.application.wait_for_idle(1))
+        self.assertEqual(results[0]["status"], "failed")
+        self.assertEqual(results[1][0], 202)
+        self.assertEqual(self.state()["job"]["status"], "completed")
+        self.assertFalse(self.controller.pause.is_set())
+        self.assertFalse(self.server.application.pause_requested)
+        self.assertEqual(len(self.controller.prepared), 1)
+
+    def test_pause_failure_close_is_honest_and_keeps_page_detached(self):
+        self.controller.block = True
+        self.assertEqual(self.submit("rename")[0], 202)
+        self.assertTrue(self.controller.started.wait(1))
+
+        def failed_pause():
+            raise RuntimeError(SECRET)
+
+        self.controller.request_pause = failed_pause
+        status, _, body = self.request("POST", "/api/close", {})
+        result = json.loads(body)
+        self.assertEqual(status, 503)
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("未能确认", result["message"])
+        self.assertNotIn("会完成核对后暂停", result["message"])
+        self.assertNotIn(SECRET, body.decode())
+        self.assertTrue(self.server.application.page_closing)
+        self.assertTrue(self.server.application.pause_requested)
+        self.assertEqual(self.state()["job"]["status"], "running")
+        self.assertEqual(self.submit("rename")[0], 409)
+
+    def test_pause_failure_and_late_progress_leave_terminal_job_unchanged(self):
+        self.assertEqual(self.submit("rename")[0], 202)
+        self.assertTrue(self.server.application.wait_for_idle(1))
+        before = self.state()["job"]
+
+        def failed_pause():
+            self.controller.pause.set()
+            raise RuntimeError(SECRET)
+
+        self.controller.request_pause = failed_pause
+        self.assertEqual(self.request("POST", "/api/pause", {})[0], 503)
+        self.controller.listener({"phase": "rename", "completed_count": 3, "total_count": 3})
+        self.assertEqual(self.state()["job"], before)
+        self.assertTrue(self.controller.pause.is_set())
+
+    def test_pause_failure_shutdown_keeps_worker_alive_until_readback(self):
+        self.controller.block = True
+        self.assertEqual(self.submit("rename")[0], 202)
+        self.assertTrue(self.controller.started.wait(1))
+        pause_entered = threading.Event()
+
+        def failed_pause():
+            pause_entered.set()
+            raise RuntimeError(SECRET)
+
+        self.controller.request_pause = failed_pause
+        done = threading.Event()
+        closer = threading.Thread(target=lambda: (shutdown_server(self.server), done.set()))
+        closer.start()
+        try:
+            self.assertTrue(pause_entered.wait(1))
+            self.assertFalse(done.wait(0.05))
+            self.assertTrue(self.server.application.worker.is_alive())
+            self.assertTrue(self.server.application.stop_requested)
+            self.assertEqual(self.submit("login")[0], 409)
+        finally:
+            self.controller.release.set()
+            closer.join(2)
+        self.assertTrue(done.is_set())
+        self.assertFalse(self.server.application.worker.is_alive())
+        self.assertEqual([action for action, _ in self.controller.calls], ["doctor", "rename"])
 
     def test_result_progress_logs_and_credentials_do_not_echo_sensitive_values(self):
         self.controller.result["items"] = [{"name": SECRET, "status": "completed", "count": 1}]

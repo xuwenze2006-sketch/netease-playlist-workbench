@@ -278,3 +278,6 @@ export interface AcceptedAction {
   job_id?: string;
   message?: string;
 }
+export interface PauseAcknowledgement {
+  status: 'pause_requested';
+}
