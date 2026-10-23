@@ -6,7 +6,7 @@ import type { ClassificationEditSession } from './ClassificationEditor';
 import { LANGUAGE_LABELS, REVIEW_LABELS, SCENE_LABELS, STYLE_LABELS } from './classificationQuality';
 import { Icon } from './icons';
 import { useSearchInput } from './useSearchInput';
-import type { ClassificationDimension, ClassificationDraftRequest, ClassificationPage } from './types';
+import type { ClassificationDimension, ClassificationDraftRequest, ClassificationPage, RecordingContext } from './types';
 import './classification.css';
 
 type Selection = ClassificationPage['filters'] & { offset: number };
@@ -20,6 +20,21 @@ function dateText(value: string | null) {
   return Number.isFinite(date.valueOf())
     ? date.toLocaleString('zh-CN', { hour12: false })
     : '未记录';
+}
+
+function HistoricalRecordingContext({ context }: { context?: RecordingContext | null }) {
+  const seconds = context?.duration_ms ? Math.floor(context.duration_ms / 1000) : null;
+  const duration = seconds === null ? '未记录' : `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+  return (
+    <div className="classification-recording-context" role="group" aria-label="历史曲目资料">
+      {context ? <>
+        <p className="classification-recording-metadata"><span>专辑：{context.album ?? '未记录'}</span><span>时长：{duration}</span>
+          {(context.album === null || context.duration_ms === null) && <span>资料不完整</span>}</p>
+        <p>快照生成：{dateText(context.generated_at)}</p>
+      </> : <p>历史曲目资料不可用</p>}
+      <p>历史本地快照仅供核对，不代表当前账号资料，也不能确认音频版本。</p>
+    </div>
+  );
 }
 
 export function ClassificationPanel({ active = true }: { active?: boolean }) {
@@ -667,6 +682,7 @@ export function ClassificationPanel({ active = true }: { active?: boolean }) {
                           <p className="classification-artists">
                             {track.artists || '歌手资料未记录'}
                           </p>
+                          <HistoricalRecordingContext context={track.recording_context} />
                           <div className="classification-tags">
                             {displayed.scenes.map((tag) => trackTag('scene', tag))}
                             {displayed.styles.map((tag) => trackTag('style', tag))}

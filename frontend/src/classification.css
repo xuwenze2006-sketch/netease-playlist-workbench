@@ -403,6 +403,15 @@
   color: #706a74;
   font-size: 12px;
 }
+.classification-recording-context {
+  margin: 0 0 10px;
+  color: #706a74;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.classification-recording-context p { margin: 3px 0; }
+.classification-recording-metadata { display: flex; flex-wrap: wrap; gap: 3px 14px; }
+.classification-recording-metadata > span { min-width: 0; overflow-wrap: anywhere; }
 .classification-tags {
   display: flex;
   flex-wrap: wrap;

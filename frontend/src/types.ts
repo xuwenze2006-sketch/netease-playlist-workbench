@@ -171,6 +171,12 @@ export interface ClassificationQuality {
   rules: { scene: string; include: string[]; exclude: string[] }[];
   draft_summary?: { pending_count: number; unknown_style_count: number; unknown_language_count: number };
 }
+export interface RecordingContext {
+  source: 'historical_snapshot';
+  generated_at: string;
+  album: string | null;
+  duration_ms: number | null;
+}
 export interface ClassificationRecord {
   position: number;
   name: string;
@@ -188,6 +194,7 @@ export interface ClassificationRecord {
   review_reasons?: string[];
   draft?: ClassificationCorrection | null;
   recording_hints?: string[];
+  recording_context?: RecordingContext | null;
 }
 export interface ClassificationChangesQuery {
   playlist: string;

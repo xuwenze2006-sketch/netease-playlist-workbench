@@ -23,6 +23,7 @@ from .classification_quality import (
     SCENE_RULES, LOW_SCORE_REASON, WEAK_EVIDENCE_REASON, INCOMPLETE_EVIDENCE_REASON,
     review_reasons, select_pilot, version_hints,
 )
+from .recording_context import recording_contexts
 
 
 MAX_REPORT_BYTES = 16 * 1024 * 1024
@@ -587,6 +588,10 @@ def build_local_classification(project, *, offset=0, limit=50, query='', dimensi
                                     'pagination': {'offset': offset, 'limit': limit, 'total': total,
                                                    'next_offset': offset + limit if offset + limit < total else None},
                                     'records': selected[offset:offset + limit]})
+            contexts = recording_contexts(cache_project, result['quality']['source_version'],
+                                          [row['record_key'] for row in result['records']])
+            for row in result['records']:
+                row['recording_context'] = contexts.get(row['record_key'])
         if generation != _cache_generation(cache_project):
             raise _Invalid()
         if not cached and projection is not None:

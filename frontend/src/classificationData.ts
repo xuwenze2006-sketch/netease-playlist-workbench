@@ -1,4 +1,4 @@
-import type { ClassificationCorrection, ClassificationPage, ClassificationQuery, ClassificationQuality } from './types';
+import type { ClassificationCorrection, ClassificationPage, ClassificationQuery, ClassificationQuality, RecordingContext } from './types';
 import { REVIEW_LABELS, SCENE_LABELS, validCorrection } from './classificationQuality';
 
 type Row = Record<string, unknown>;
@@ -31,6 +31,24 @@ function timestamp(value: unknown): string | null {
   if (value === null) return null;
   const result = text(value, 100);
   return Number.isFinite(Date.parse(result)) ? result : fail();
+}
+function recordingContext(value: unknown): RecordingContext | null {
+  // Supplemental historical evidence cannot make otherwise valid core records unreadable.
+  try {
+    const row = object(value);
+    if (row.source !== 'historical_snapshot') return null;
+    const generated = text(row.generated_at, 100);
+    const parts = /^(\d{4})-(\d{2})-(\d{2})T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/.exec(generated);
+    if (!parts || !Number.isFinite(Date.parse(generated))) return null;
+    const year = Number(parts[1]), month = Number(parts[2]), day = Number(parts[3]);
+    if (year < 1 || month < 1 || month > 12 || day < 1 || day > new Date(Date.UTC(year, month, 0)).getUTCDate()) return null;
+    let album: string | null = null;
+    try { album = text(row.album); } catch { /* Preserve a valid duration even if album is malformed. */ }
+    const duration = row.duration_ms;
+    const duration_ms = typeof duration === 'number' && Number.isSafeInteger(duration) && duration > 0 && duration <= 86400000
+      ? duration : null;
+    return { source: 'historical_snapshot', generated_at: generated, album, duration_ms };
+  } catch { return null; }
 }
 export function validClassificationQuery(query: ClassificationQuery): boolean {
   try {
@@ -100,6 +118,7 @@ export function normalizeClassification(value: unknown, request: ClassificationQ
       styles: texts(row.styles), scenes: texts(row.scenes), language: text(row.language, 160),
       pending_reasons: texts(row.pending_reasons, 16), evidence_note: text(row.evidence_note, 2048, true),
       language_evidence_note: text(row.language_evidence_note, 2048, true),
+      recording_context: recordingContext(row.recording_context),
       ...(row.recording_hints !== undefined ? { recording_hints: texts(row.recording_hints, 16) } : {}) };
     if (!quality) return record;
     const recordKey = text(row.record_key, 32);
