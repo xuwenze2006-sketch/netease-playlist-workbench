@@ -20,6 +20,8 @@
 
 已有兼容分类资料时，可在“分类成果”中展开“修正分类”，补充理由及录音版本。本地草稿保存在 `.organizer/classification-draft.json`，不会直接修改线上歌单或原分类报告。来源改变或并发保存冲突时需要重新核对；模型自评分不是准确率。诊断与六类场景的收录条件见[分类质量说明](docs/classification-quality.md)。
 
+独立的[具体录音核验工具](docs/recording-review.md)支持保存、读取有来源约束的核验文件，并生成可在浏览器打开的场景增删预览；未核验项保留原成员。工具不自动试听，也不执行账号修改。
+
 ## 首次运行
 
 准备 **Windows、Python 3.12、Node.js 24.15 或更新的 24.x 版本（含 npm）**，并确认 `python`、`node`、`npm` 已加入 PATH。Windows 推荐安装 Edge，启动器优先打开独立应用窗口。无需安装 Codex；Python 后端使用标准库，无需额外 `pip install`。

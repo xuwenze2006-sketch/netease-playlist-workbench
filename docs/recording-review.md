@@ -1,0 +1,58 @@
+# 具体录音核验与场景修正预览
+
+这套离线工具保存逐曲核验结果，并生成可用浏览器打开的场景增删预览。它读取已有 `artifacts/全库分类-逐曲结果.json`，不修改正式分类、分类执行计划、已有修正草稿或线上歌单，也不会下载或自动听辨歌曲。
+
+核验记录与“修改标签的草稿”分开：核验后维持原标签也可以保存。目录匹配、实际音频核验、逐场景结论分别记录；来源链接和文字描述不能代替试听。
+
+## 建立、保存、读取
+
+在项目根目录运行，歌曲序号来自原始报告。每批支持1–50首，序号不能重复：
+
+```powershell
+python -B -X utf8 scripts/review_recordings.py init --positions 1,2 --bundle sample-01
+```
+
+记录位于 `artifacts/recording-reviews/sample-01/review.json`。新记录的身份和场景结论均为未核验。原场景为空的歌曲不会凭空生成收录建议。
+
+将该文件复制为单独的填写稿，例如 `artifacts/sample-01-filled.json`，在填写稿中补充核验结果；保留原核验包。然后保存为**新的**核验包并自动读回比较：
+
+```powershell
+python -B -X utf8 scripts/review_recordings.py save --input artifacts/sample-01-filled.json --bundle sample-02
+python -B -X utf8 scripts/review_recordings.py read --bundle sample-02
+python -B -X utf8 scripts/review_recordings.py preview --bundle sample-02
+```
+
+预览生成到 `artifacts/recording-previews/sample-02/index.html`，同目录的 `preview.json` 保留结构化差异。用浏览器打开HTML即可查看，页面不加载外部资源；只有主动点击来源链接才会访问对应网站。所有命令均可在子命令前传入 `--project` 指定另一个本地项目。
+
+既有核验包和预览目录不覆盖。即使上次导出中断，也应保留记录并使用新名称；不要反复覆盖失败证据。原报告字节变化、身份字段错配、损坏JSON、重复字段、越界数据和不安全文件路径会被拒绝。
+
+这些个人记录均在被Git忽略的 `artifacts/` 中，不能作为源码提交。
+
+## 如何填写
+
+每首歌保留原序号、歌名、艺人、原场景，整个核验包绑定来源SHA256。不得手动修改这些来源字段来迁移旧结论。
+
+`recording`记录具体版本与证据：
+
+- `status`：`unresolved`表示录音身份未确定；`metadata_matched`表示有匹配的目录候选；`audio_verified`表示填写者确认已核对具体音频并实际试听。
+- `version`、`note`：版本说明、目录差异、冲突和未解决问题。
+- `evidence_sources`：来源列表，每项包含`url`、`title`、`kind`（`catalog`、`lyrics`、`audio`）、`note`。网页只读到了检索摘要时应明确注明，不能写成已读取完整页面或已试听。
+- `listened_segments`：实际试听片段，每项包含`start_seconds`、`end_seconds`、`source_url`、`note`。来源必须对应上述音频来源，结束时间大于开始时间。未试听时保持空列表。
+
+`scene_decisions`中的每项包含`scene`、`decision`、`reason`：
+
+- `suitable`：有具体录音依据，适合这个场景；原来没有时进入“预计加入”。
+- `unsuitable`：有具体录音依据，不适合这个场景；原来有时进入“预计移出”。
+- `uncertain`：证据不足，保留原成员关系，不自动加入或移除。
+
+每个场景只能出现一次，未列出的场景保持原状。明确适合/不适合的结论要求`audio_verified`和有效试听片段；最终最多保留3个场景，与既有分类数据兼容。实际试听应覆盖主体、高潮和重要转折，必要时全曲试听，收录条件见[分类质量说明](classification-quality.md)。
+
+程序只能验证记录格式、来源绑定与证据字段之间的一致性，**不能证明填写者真的试听、来源真实，或主观判断正确**。把一段虚构的试听记录填入文件不会让分类变准确。
+
+## 如何解读预览
+
+“样本数”仅表示收录到核验文件中的记录数。目录匹配不等于音频身份确认；“所列场景均已核验”覆盖原有场景与本次列出的场景，不表示这首歌的所有可能场景、语言和风格均已核验。省略原有场景的判断时，该场景仍计入未核验；一个文件可以保存部分已核验、部分未知的结果。
+
+全部场景仍未知时，预览应为零增删，而不是自动移除所有证据不足的歌。确认原分类正确时，也可能零增删；应结合核验状态判断，不能把零增删直接当作“已完成”。
+
+HTML是固定快照，不会自动侦测后来发生的来源变化。再次运行`read`或生成新预览时会重新检查来源。只有新的本地预览，不构成线上执行授权。
