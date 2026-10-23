@@ -7,7 +7,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .service import _APPROVED_ARTIST_COUNTS
-from .web_preview import build_local_preview, _load as _load_record
+from .web_preview import (build_local_preview, _load as _load_record,
+                          _HistoryReadError, _STRICT_HISTORY, _strict_history_reads)
+
+
+_HISTORY_FILES = ('歌手精选执行结果.json', '名称整理执行结果.json')
 
 
 def _text(value, maximum=100):
@@ -32,7 +36,8 @@ def _count(value, maximum=10000):
 
 
 def _load(project, name, maximum=256 * 1024):
-    record = _load_record(project, name, maximum)
+    record = _load_record(project, name, maximum,
+                          strict=_STRICT_HISTORY.get() and name in _HISTORY_FILES)
     return (record[0], record[1] / 10**9) if record is not None else (None, 0)
 
 
@@ -226,13 +231,14 @@ def load_playlist_binding(project, key):
             'playlist': {'id': row['_id'], 'original_id': key}, 'signatures': signatures}
 
 
-def _project_directory(project, snapshot_time, snapshot):
+def _project_directory(project, snapshot_time, snapshot, *, artist_receipt=None):
     """One private directory projection shared by display and explicit readers."""
     state = {'account': None, 'source': 'empty', 'updated_at': None, 'playlists': [],
              'history': None, 'artists_completed': False, 'preview': None}
     if snapshot is not None:
         state.update(copy.deepcopy(snapshot))
-    artist_receipt, artist_time = _load(project, '歌手精选执行结果.json')
+    artist_receipt, artist_time = (artist_receipt if artist_receipt is not None
+                                   else _load(project, '歌手精选执行结果.json'))
     journal, _ = _load(project, '歌手精选执行进度.json')
     completed = _confirmed_artists(artist_receipt, journal, state.get('_owner'))
     for raw in completed:
@@ -258,10 +264,16 @@ def _project_directory(project, snapshot_time, snapshot):
 
 def _state_from_directory(project, snapshot_time, snapshot, *, organizer=None):
     """Project one selected directory without changing its private identity evidence."""
-    state = _project_directory(project, snapshot_time, snapshot)
+    artist_receipt = _load(project, _HISTORY_FILES[0])
+    # Read both fixed receipts even if the organizer can supply an older result.
+    # Its permissive hook must not hide a damaged receipt during strict refresh.
+    rename_receipt = _load(project, _HISTORY_FILES[1]) if _STRICT_HISTORY.get() else None
+    state = _project_directory(project, snapshot_time, snapshot, artist_receipt=artist_receipt)
     if organizer is not None:
         try:
             historical = organizer._last_result()
+        except _HistoryReadError:
+            raise
         except Exception:
             historical = None
         if isinstance(historical, dict):
@@ -275,8 +287,9 @@ def _state_from_directory(project, snapshot_time, snapshot, *, organizer=None):
         classification, timestamp = build_classification_history(project)
         if classification is not None:
             histories.append((timestamp, classification))
-        for operation, name in (('artists', '歌手精选执行结果.json'), ('renames', '名称整理执行结果.json')):
-            record, timestamp = _load(project, name)
+        if rename_receipt is None:
+            rename_receipt = _load(project, _HISTORY_FILES[1])
+        for operation, (record, timestamp) in (('artists', artist_receipt), ('renames', rename_receipt)):
             history = _history(record, operation)
             if history is not None:
                 histories.append((timestamp, history))

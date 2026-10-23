@@ -1,7 +1,11 @@
 """Bounded, public-only previews of paired local records; never an execution permit."""
 
 import json
+import os
 import re
+import stat
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -19,6 +23,23 @@ _VISIBILITY = '精选候选为展示参考，创建时仍需确认官方默认�
 
 class _InvalidRecord(ValueError):
     pass
+
+
+class _HistoryReadError(ValueError):
+    """A strict actual receipt read failed; permissive history hooks must not hide it."""
+
+
+_STRICT_HISTORY = ContextVar('strict_local_history_reads', default=False)
+
+
+@contextmanager
+def _strict_history_reads():
+    """Apply strict receipt loading to the actual provider call, isolated per context."""
+    token = _STRICT_HISTORY.set(True)
+    try:
+        yield
+    finally:
+        _STRICT_HISTORY.reset(token)
 
 
 def _original(value):
@@ -74,24 +95,74 @@ def _bad_constant(value):
     raise _InvalidRecord()
 
 
-def _load(project, name, maximum):
+def _record_signature(info):
+    return (info.st_dev, info.st_ino, info.st_mode, info.st_size,
+            info.st_mtime_ns, info.st_ctime_ns, getattr(info, 'st_file_attributes', 0))
+
+
+def _plain_record_path(info, *, directory=False):
+    expected = stat.S_ISDIR if directory else stat.S_ISREG
+    return (expected(info.st_mode) and not getattr(info, 'st_file_attributes', 0)
+            & getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0x400))
+
+
+def _directory_identity(info):
+    # Creating an unrelated sibling can legitimately change directory times/size.
+    return (info.st_dev, info.st_ino, info.st_mode,
+            getattr(info, 'st_file_attributes', 0) & getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0x400))
+
+
+def _load(project, name, maximum, *, strict=False):
+    """Optional records are permissive at startup; strict reads reject damaged sources."""
     path = project / 'artifacts' / name
     try:
+        if strict:
+            root = project.lstat()
+            if not _plain_record_path(root, directory=True):
+                raise _InvalidRecord()
+            try:
+                folder = path.parent.lstat()
+            except FileNotFoundError:
+                if _directory_identity(root) != _directory_identity(project.lstat()):
+                    raise _InvalidRecord()
+                return None
+            if not _plain_record_path(folder, directory=True):
+                raise _InvalidRecord()
+            try:
+                before = path.lstat()
+            except FileNotFoundError:
+                if _directory_identity(folder) != _directory_identity(path.parent.lstat()):
+                    raise _InvalidRecord()
+                return None
+            if not _plain_record_path(before):
+                raise _InvalidRecord()
         if path.is_symlink() or not path.resolve().is_relative_to(project):
-            return None
-        before = path.stat()
+            raise _InvalidRecord()
+        if not strict:
+            before = path.stat()
         if not 0 < before.st_size <= maximum:
-            return None
+            raise _InvalidRecord()
         with path.open('rb') as stream:
             raw = stream.read(maximum + 1)
-        after = path.stat()
+            # Windows lstat/fstat expose different ctime meanings. Compare only
+            # shared identity fields here; retain full path before/after checks.
+            if strict and _record_signature(before)[:5] != _record_signature(os.fstat(stream.fileno()))[:5]:
+                raise _InvalidRecord()
+        after = path.lstat() if strict else path.stat()
+        if strict and (_record_signature(before) != _record_signature(after)
+                       or _directory_identity(folder) != _directory_identity(path.parent.lstat())
+                       or _directory_identity(root) != _directory_identity(project.lstat())
+                       or len(raw) != before.st_size):
+            raise _InvalidRecord()
         if (len(raw) > maximum or before.st_size != after.st_size
                 or before.st_mtime_ns != after.st_mtime_ns):
-            return None
+            raise _InvalidRecord()
         data = json.loads(raw.decode('utf-8'), object_pairs_hook=_unique_object,
                           parse_constant=_bad_constant)
         return _object(data), after.st_mtime_ns
     except (OSError, UnicodeError, ValueError, RecursionError):
+        if strict:
+            raise _HistoryReadError('local history record unavailable') from None
         return None
 
 

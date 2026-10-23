@@ -241,8 +241,19 @@ class Organizer:
 
     def _last_result(self):
         """Read small local receipts only; this is never a live account check."""
+        from .web_preview import _STRICT_HISTORY, _load as load_record
+        strict = _STRICT_HISTORY.get()
+        receipts = {}
         candidates = []
         for operation, filename in (('artists', '歌手精选执行结果.json'), ('renames', '名称整理执行结果.json')):
+            if strict:
+                # Use the same bounded actual reader as the display mapper.
+                # Read failures must escape this permissive hook during refresh.
+                loaded = load_record(self.project, filename, 256 * 1024, strict=True)
+                if loaded is not None:
+                    receipts[operation] = loaded[0]
+                    candidates.append((loaded[1], operation, None))
+                continue
             try:
                 path = self._workspace_target(Path('artifacts') / filename)
                 stat = path.stat()
@@ -261,7 +272,7 @@ class Organizer:
             if operation == 'classification':
                 return classification
             try:
-                record = json.loads(path.read_text(encoding='utf-8'))
+                record = receipts[operation] if strict else json.loads(path.read_text(encoding='utf-8'))
                 if (not isinstance(record, dict) or record.get('status') not in
                         ('completed', 'paused', 'partial', 'uncertain', 'blocked')
                         or type(record.get('completed_count')) is not int

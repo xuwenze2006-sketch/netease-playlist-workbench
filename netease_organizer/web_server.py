@@ -366,14 +366,15 @@ class WorkbenchApplication:
 
     def _strict_local_data(self):
         """Explicit local refresh must report failure instead of publishing an empty fallback."""
-        if callable(self.state_provider):
-            raw = self.state_provider()
-        elif self.state_provider is None and self.project is not None:
-            from .web_state import build_local_state
-            declared = inspect.getattr_static(self.controller, '_last_result', None)
-            raw = build_local_state(self.project, organizer=self.controller if callable(declared) else None)
-        else:
-            raise ValueError('local state unavailable')
+        from .web_state import _strict_history_reads, build_local_state
+        with _strict_history_reads():
+            if callable(self.state_provider):
+                raw = self.state_provider()
+            elif self.state_provider is None and self.project is not None:
+                declared = inspect.getattr_static(self.controller, '_last_result', None)
+                raw = build_local_state(self.project, organizer=self.controller if callable(declared) else None)
+            else:
+                raise ValueError('local state unavailable')
         if (not isinstance(raw, dict) or raw.get('source') not in ('local_record', 'empty')
                 or not isinstance(raw.get('playlists'), list) or len(raw['playlists']) > 1000
                 or any(not isinstance(row, dict) for row in raw['playlists'])
