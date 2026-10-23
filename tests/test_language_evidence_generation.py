@@ -22,6 +22,69 @@ def lyric_features(text, **provider_fields):
 
 
 class LanguageEvidenceGenerationTests(unittest.TestCase):
+    def test_bracketed_original_body_reaches_the_correct_language_playlists(self):
+        english = '[I love you and you are with me forever]\n' * 3
+        japanese = '[君のことを思い出していつも歌います世界未来]\n' * 3
+        records, reviews, jobs, summary = self.build([
+            lyric_features(english), lyric_features(japanese),
+        ])
+        self.assertEqual([record['language'] for record in records], ['英语', '日语'])
+        self.assertFalse(any(record['review_note'] for record in records))
+        self.assertEqual(reviews, [])
+        self.assertEqual(summary['pending_count'], 0)
+        self.assertEqual(jobs['语言 · 英语'], [f'{1:032X}'])
+        self.assertEqual(jobs['语言 · 日语'], [f'{2:032X}'])
+
+    def test_credits_and_nonletter_noise_cannot_create_language_playlists(self):
+        texts = [
+            'Lyrics by: The You And Me Band\nMusic by: The You And Me Band\n'
+            'Written by: The You And Me Band\nVocals: The You And Me Band',
+            '・' * 20, '١٢٣٤٥٦٧٨٩٠' * 3, '๐๑๒๓๔๕๖๗๘๙' * 3,
+            '\u3099' * 20, '\u0640' * 20, '\u1160' * 20,
+        ]
+        records, _, jobs, summary = self.build([lyric_features(text) for text in texts])
+        self.assertEqual([record['language'] for record in records], ['待辨识'] * len(texts))
+        self.assertEqual(summary['unknown_language_count'], len(texts))
+        self.assertEqual(jobs['分类 · 待辨识'], [f'{position:032X}' for position in range(1, len(texts) + 1)])
+        self.assertFalse(any(name.startswith('语言 · ') for name in jobs))
+
+    def test_noise_does_not_create_a_conflict_with_provider_instrumental_marker(self):
+        records, reviews, _, summary = self.build([
+            lyric_features(text, pureMusic=True)
+            for text in ('... --- !!!', '١٢٣٤٥٦٧٨٩٠' * 3,
+                         '[Chorus]\n[Instrumental]\n[00:00.00]',
+                         'Vocals: The You And Me Band\n' * 3)
+        ])
+        self.assertEqual([record['language'] for record in records], ['器乐或配乐录音'] * 4)
+        self.assertFalse(any(record['review_note'] for record in records))
+        self.assertEqual(reviews, [])
+        self.assertEqual(summary['unknown_language_count'], 0)
+
+    def test_bracketed_body_still_conflicts_with_provider_instrumental_marker(self):
+        body = '[君のことを思い出していつも歌います世界未来]\n' * 3
+        records, reviews, _, _ = self.build([
+            lyric_features(body, pureMusic=True), lyric_features(body, pureMusic=True),
+        ], models=[None, 'instrumental'])
+        self.assertEqual([record['language'] for record in records], ['待辨识', '器乐或配乐录音'])
+        self.assertTrue(all(record['review_note'] for record in records))
+        self.assertEqual([review['position'] for review in reviews], [1, 2])
+
+    def test_cleanup_retains_explicit_models_and_accepted_recording_reviews(self):
+        credits = 'Vocals: The You And Me Band\n' * 3
+        body = '[君のことを思い出していつも歌います世界未来]\n' * 3
+        records, reviews, jobs, _ = self.build([
+            lyric_features(credits), lyric_features(credits),
+            lyric_features(body), lyric_features(body),
+        ], models=['other', 'en', 'en', None], reviews=[
+            {'position': 4, 'language': 'en', 'review_note': False,
+             'notes': '合成已接受录音结论保持优先于文字线索'},
+        ])
+        self.assertEqual([record['language'] for record in records], ['其他与多语', '英语', '英语', '英语'])
+        self.assertEqual([record['review_note'] for record in records], [False, False, True, False])
+        self.assertEqual([review['position'] for review in reviews], [3])
+        self.assertTrue(records[3]['language_evidence_note'].startswith('单曲录音复核：'))
+        self.assertEqual(jobs['语言 · 英语'], [f'{position:032X}' for position in (2, 3, 4)])
+
     def build(self, features, *, models=None, reviews=None):
         """Use synthetic source files and retain every byte across in-memory generation."""
         directory = tempfile.TemporaryDirectory(prefix='language-evidence-generation-')

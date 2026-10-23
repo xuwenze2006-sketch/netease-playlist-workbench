@@ -6,14 +6,24 @@ from collections import Counter
 
 from .latin_evidence import derive_latin_evidence
 
-_STAMP = re.compile(r'\[[^\]]{0,120}\]|<\d[^>]{0,30}>')
+_STAMP = re.compile(r'\[[0-9]{2,}:[0-5][0-9](?:\.[0-9]+)?\]|<[0-9]{2,}:[0-5][0-9]\.[0-9]+>')
+_METADATA = re.compile(r'\[\s*(?:ar|ti|al|by|offset|re|ve|length)\s*:[^\[\]]*\]', re.I)
+_SECTION = re.compile(
+    r'\[\s*(?:intro|outro|verse|chorus|bridge|pre-chorus|post-chorus|instrumental)'
+    r'(?:\s+[0-9]+)?\s*\]', re.I,
+)
+_WRAPPED_LINE = re.compile(r'\[([^\[\]]*)\]|\(([^()]*)\)')
 _CREDIT = re.compile(
-    r'^(作词|作曲|词|曲|编曲|制作|制作人|录音|混音|母带|监制|发行|出品|版权|'
-    r'企划|统筹|和声|吉他|贝斯|鼓|键盘|演唱|歌手|专辑|歌词|翻译|译者|'
-    r'composer|lyricist|arranger|producer|writer|written|vocal|lyrics|music|'
-    r'mixed|mixing|mastered|recorded|recording|copyright|all rights)\s*[:：-]', re.I,
+    r'^(?:(?:作词|作曲|词|曲|编曲|制作|制作人|录音|混音|母带|监制|发行|出品|版权|'
+    r'企划|统筹|和声|吉他|贝斯|鼓|键盘|演唱|歌手|专辑|歌词|翻译|译者'
+    r')\s*[:-]|(?:composer|composed|lyricist|arranger|arranged|producer|produced|'
+    r'writer|written|vocals?|lyrics|music|mixed|mixing|mastered|recorded|recording|'
+    r'copyright|all rights)(?:\s+by)?\s*:)', re.I,
 )
 _INSTRUMENTAL_LINE = re.compile(r'纯音乐\s*[,，、:：;；。\-—]?\s*(?:请欣赏|无歌词)\s*[。.!！]*')
+# These elongation, iteration, omission and filler characters are letters in
+# Unicode, but cannot independently establish a lyric body or singing language.
+_DECORATIVE_LETTERS = frozenset('ーゝゞヽヾـๆฯ\u115f\u1160\u3164\uffa0')
 _YUE = set('嘅唔佢啲咗冇嘢喺嗰嚟攰嘥瞓睇俾畀咁係')
 _TOPICS = {
     'solitude': ('lonely', 'alone', 'miss', 'tears', 'cry', 'goodbye', '孤独', '寂寞', '眼泪', '想念', '离开', '再见'),
@@ -21,6 +31,17 @@ _TOPICS = {
     'uplift': ('dream', 'hope', 'alive', 'shine', 'strong', '梦想', '希望', '明天', '勇敢', '阳光'),
     'party': ('dance', 'party', 'groove', 'funk', 'disco', '跳舞', '狂欢', '舞池'),
 }
+
+
+def _is_substantive_letter(char):
+    return unicodedata.category(char).startswith('L') and char not in _DECORATIVE_LETTERS
+
+
+def _is_credit(text):
+    wrapped = _WRAPPED_LINE.fullmatch(text)
+    if wrapped:
+        text = next(group for group in wrapped.groups() if group is not None).strip()
+    return bool(_CREDIT.match(text))
 
 
 def derive_lyric_features(data):
@@ -33,18 +54,23 @@ def derive_lyric_features(data):
     lines = []
     instrumental_marker = data.get('pureMusic') is True
     for raw in lyric.splitlines():
-        text = _STAMP.sub('', raw).strip()
-        if not text or _CREDIT.match(text):
+        text = unicodedata.normalize('NFKC', raw)
+        # Separators prevent timed word fragments from becoming familiar words.
+        text = _STAMP.sub(' ', text).strip()
+        if not text or _METADATA.fullmatch(text) or _SECTION.fullmatch(text) or _is_credit(text):
             continue
         # A provider description is evidence, not lyric text. A sentence that
         # merely contains those words must still be retained as body text.
         if _INSTRUMENTAL_LINE.fullmatch(text):
             instrumental_marker = True
             continue
-        lines.append(text)
-    text = unicodedata.normalize('NFKC', '\n'.join(lines)).casefold()
+        if any(_is_substantive_letter(char) for char in text):
+            lines.append(text)
+    text = '\n'.join(lines).casefold()
     scripts = Counter()
     for char in text:
+        if not _is_substantive_letter(char):
+            continue
         value = ord(char)
         if 0x3040 <= value <= 0x30ff or 0x31f0 <= value <= 0x31ff:
             scripts['kana'] += 1
