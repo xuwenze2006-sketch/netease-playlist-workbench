@@ -199,8 +199,14 @@ class WindowsRuntimeDiscoveryTests(unittest.TestCase):
             shutil.copyfile(PROJECT / '启动歌单整理.cmd', launcher)
             marker = project / 'received.json'
             (project / 'run_organizer.py').write_text(
-                "import json,sys\nfrom pathlib import Path\n"
-                "Path(__file__).with_name('received.json').write_text(json.dumps(sys.argv[1:]), encoding='utf-8')\n",
+                "import json,os,sys\nfrom pathlib import Path\n"
+                "marker = Path(__file__).resolve().with_name('received.json')\n"
+                # Releasing the fake entry's temporary cwd makes receipt-based
+                # cleanup safe without treating a receipt as process-exit proof.
+                "os.chdir(Path(sys.executable).parent)\n"
+                "pending = marker.with_suffix('.tmp')\n"
+                "pending.write_text(json.dumps(sys.argv[1:]), encoding='utf-8')\n"
+                "pending.replace(marker)\n",
                 encoding='utf-8')
             result = subprocess.run(['cmd.exe', '/d', '/c', launcher.name], cwd=project,
                 capture_output=True, timeout=15, creationflags=subprocess.CREATE_NO_WINDOW)

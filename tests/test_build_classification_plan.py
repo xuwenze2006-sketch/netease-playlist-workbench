@@ -139,6 +139,119 @@ class BuildClassificationPlanTests(unittest.TestCase):
                 self.assertIs(record['review_note'], model is not None)
                 self.assertEqual(report['summary']['review_note_count'], 0 if model is None else 1)
 
+    def conflict_fixture(self, conflicts, *, entry=None, model='other', hints=None):
+        root = self.fixture(entry or {'position': 1, 'language': None}, model=model)
+        artifacts = root / 'artifacts'
+        (artifacts / '分类语言核验01.json').write_text(json.dumps({
+            'recommendations': [] if entry is None else [entry], 'conflicts': conflicts,
+        }, ensure_ascii=False), encoding='utf-8')
+        (artifacts / '全库分类-歌词特征.json').write_text(json.dumps({'tracks': {'3': {
+            'status': 'ok', 'has_original_lyric_text': True, 'original_line_count': 40,
+            'script_counts': {'latin': 1200}, 'language_hints': hints or ['fr'],
+        }}}), encoding='utf-8')
+        return root
+
+    def read_exports(self, root):
+        artifacts = root / 'artifacts'
+        report = json.loads((artifacts / '全库分类-逐曲结果.json').read_text(encoding='utf-8'))
+        reviews = json.loads((artifacts / '全库分类-需复核录音.json').read_text(encoding='utf-8'))
+        plan = json.loads((artifacts / '分类整理计划.json').read_text(encoding='utf-8'))
+        return report, reviews, plan
+
+    def test_unresolved_conflict_retains_specific_evidence_without_adopting_suggested_label(self):
+        reason = '词表提示与具体录音矛盾，需要核对版本，不能按最高词分改语言。'
+        root = self.conflict_fixture([{
+            'position': 1, 'suggested_language': 'en', 'confidence': 'low',
+            'reason': reason, 'flags': ['function_word_conflict', 'recording_version_review'],
+        }])
+        self.invoke(root)
+        report, reviews, plan = self.read_exports(root)
+        record = report['records'][0]
+        self.assertEqual(record['language'], '其他与多语')
+        self.assertEqual(record['pending_reasons'], [])
+        self.assertIn(reason, record['language_evidence_note'])
+        self.assertIs(record['review_note'], True)
+        self.assertEqual(report['summary']['review_note_count'], 1)
+        self.assertEqual([(x['position'], x['assigned'], x['note']) for x in reviews],
+                         [(1, 'other', record['language_evidence_note'])])
+        self.assertEqual([job['name'] for job in plan['jobs']],
+                         ['场景 · 通勤散步', '风格 · 流行抒情', '语言 · 其他与多语'])
+        self.assertTrue(all(job['candidate_track_ids'] == ['A' * 32] for job in plan['jobs']))
+
+    def test_only_exact_unresolved_legacy_conflict_flags_add_review(self):
+        cases = [('model_text_conflict', True), ('possible_wrong_lyric', True),
+                 ('possible_description_text', True), ('recording_version_review', True),
+                 ('specific_bilingual_version', False), ('recording_version_review_extra', False),
+                 ('future_flag', False)]
+        for flag, expected in cases:
+            with self.subTest(flag=flag):
+                root = self.conflict_fixture([{'position': 1, 'reason': '保留具体语言依据',
+                                               'confidence': 'low', 'flags': [flag]}])
+                self.invoke(root)
+                report, reviews, _ = self.read_exports(root)
+                record = report['records'][0]
+                self.assertIn('保留具体语言依据', record['language_evidence_note'])
+                self.assertIs(record['review_note'], expected)
+                self.assertEqual(len(reviews), int(expected))
+
+    def test_explicit_conflict_status_overrides_legacy_flags_but_does_not_clear_inferred_review(self):
+        for explicit, flags, model, expected in [
+            (True, [], 'other', True),
+            (False, ['recording_version_review'], 'other', False),
+            (False, [], 'en', True),
+        ]:
+            with self.subTest(explicit=explicit, model=model):
+                root = self.conflict_fixture([{'position': 1, 'reason': '具体补充说明',
+                                               'review_note': explicit, 'flags': flags}], model=model)
+                self.invoke(root)
+                report, reviews, _ = self.read_exports(root)
+                self.assertIs(report['records'][0]['review_note'], expected)
+                self.assertEqual(len(reviews), int(expected))
+
+    def test_explicit_accepted_resolution_wins_but_null_stays_unresolved(self):
+        for wrapped, label, expected in [(False, 'en', False), (True, 'en', False), (False, None, True)]:
+            with self.subTest(wrapped=wrapped, label=label):
+                root = self.conflict_fixture([{'position': 1, 'reason': '较早的录音待核提示',
+                                               'flags': ['recording_version_review']}], model=None)
+                entry = {'position': 1, 'language': label, 'review_note': False,
+                         'confidence': 'high', 'notes': '新近明确复核结论'}
+                (root / 'artifacts/分类语言核验02.json').write_text(json.dumps(
+                    {'recommendations': [entry]} if wrapped else [entry]), encoding='utf-8')
+                self.invoke(root)
+                report, reviews, _ = self.read_exports(root)
+                record = report['records'][0]
+                self.assertEqual(record['language'], '英语' if label == 'en' else '待辨识')
+                self.assertIs(record['review_note'], expected)
+                self.assertEqual(len(reviews), int(expected))
+                self.assertIn('新近明确复核结论', record['language_evidence_note'])
+                self.assertIn('较早的录音待核提示', record['language_evidence_note'])
+
+    def test_informational_conflict_cannot_erase_manual_unresolved_state(self):
+        entry = {'position': 1, 'language': 'en', 'confidence': 'high',
+                 'review_note': True, 'notes': '仍需复核的具体录音'}
+        root = self.conflict_fixture([{'position': 1, 'reason': '已知补充事实', 'review_note': False}],
+                                     entry=entry, model=None)
+        self.invoke(root)
+        report, reviews, _ = self.read_exports(root)
+        self.assertIs(report['records'][0]['review_note'], True)
+        self.assertEqual(len(reviews), 1)
+
+    def test_invalid_consumed_conflicts_fail_without_writing_exports(self):
+        valid = {'position': 1, 'reason': '具体录音依据', 'flags': []}
+        cases = [None, {}, 'invalid', [None], [valid, valid]]
+        cases += [[{**valid, 'position': value}] for value in (True, 0, 2, '1')]
+        cases += [[{**valid, 'reason': value}] for value in (None, 1, '', '  ') ]
+        cases += [[{**valid, 'flags': value}] for value in (None, 'flag', [1])]
+        cases += [[{**valid, 'review_note': value}] for value in (None, 0, 'false')]
+        for conflicts in cases:
+            with self.subTest(conflicts=conflicts):
+                root = self.conflict_fixture(conflicts)
+                artifacts = root / 'artifacts'
+                before = {p.name: p.read_bytes() for p in artifacts.iterdir()}
+                with self.assertRaises(ValueError):
+                    self.invoke(root)
+                self.assertEqual({p.name: p.read_bytes() for p in artifacts.iterdir()}, before)
+
     def test_csv_text_fields_escape_hidden_and_fullwidth_formula_prefixes(self):
         cases = (
             ('=1+1', "'=1+1"), ('+1+1', "'+1+1"),

@@ -15,6 +15,36 @@ from netease_organizer.service import Organizer
 from netease_organizer.classification_generation import generation_lease,publish_exports,require_unexecuted
 
 
+_UNRESOLVED_CONFLICT_FLAGS = frozenset({
+    'model_text_conflict', 'possible_wrong_lyric',
+    'possible_description_text', 'recording_version_review',
+})
+
+
+def _conflict_evidence(data, count):
+    """Read supplemental evidence only; suggestions never authorize relabeling."""
+    if type(data) is not dict:
+        return {}
+    entries = data.get('conflicts', [])
+    if type(entries) is not list:
+        raise ValueError('语言复核补充证据格式不兼容。')
+    result = {}
+    for entry in entries:
+        if type(entry) is not dict:
+            raise ValueError('语言复核补充证据格式不兼容。')
+        pos = entry.get('position')
+        reason = entry.get('reason')
+        flags = entry.get('flags', [])
+        if (type(pos) is not int or not 1 <= pos <= count or pos in result
+                or type(reason) is not str or not reason.strip()
+                or type(flags) is not list or any(type(flag) is not str for flag in flags)
+                or 'review_note' in entry and type(entry['review_note']) is not bool):
+            raise ValueError('语言复核补充证据格式不兼容。')
+        needs_review = entry.get('review_note', bool(_UNRESOLVED_CONFLICT_FLAGS.intersection(flags)))
+        result[pos] = (reason, needs_review)
+    return result
+
+
 def build_exports(root):
     a=root/'artifacts'
     snap=json.loads((a/'全库分类-账号基线.json').read_text(encoding='utf-8'))['snapshot']
@@ -24,11 +54,15 @@ def build_exports(root):
     rows=validate_rows(sum([json.loads((a/f'分类判断-分块{i:02}.json').read_text(encoding='utf-8')) for i in range(1,4)],[]),len(tracks))
     cache=json.loads((a/'全库分类-歌词特征.json').read_text(encoding='utf-8'))['tracks']
     historical=json.loads((a/'网易云本地歌单快照.json').read_text(encoding='utf-8')).get('tracks',{})
-    reviews={}
+    reviews={};conflicts={};explicitly_resolved=set()
     for i in range(1,4):
         path=a/f'分类语言核验{i:02}.json'
         if not path.exists():continue
         data=json.loads(path.read_text(encoding='utf-8'))
+        additions = _conflict_evidence(data, len(tracks))
+        if conflicts.keys() & additions.keys():
+            raise ValueError('语言复核补充证据位置重复。')
+        conflicts.update(additions)
         entries=data if isinstance(data,list) else data.get('recommendations',[])
         for entry in entries:
             pos=entry['position']
@@ -44,6 +78,8 @@ def build_exports(root):
             needs_review=label is None or entry.get('review_note','possible_wrong_lyric' in flags)
             reason=next((entry[k] for k in ('notes','reason','evidence') if type(entry.get(k)) is str and entry[k]),'单曲语言复核')
             reviews[pos]=(label,reason,needs_review)
+            if label is not None and entry.get('review_note') is False:
+                explicitly_resolved.add(pos)
     jobs={(d,k):[] for d,labels in [('scene',SCENES),('style',STYLES),('language',LANGUAGES)] for k in labels}
     pending=[];records=[];review=[]
     for row,t in zip(rows,tracks):
@@ -54,6 +90,11 @@ def build_exports(root):
         if pos in reviews:
             language,language_note,needs_review=reviews[pos]
             language_note='单曲录音复核：'+language_note
+        if pos in conflicts:
+            reason, conflict_review = conflicts[pos]
+            language_note += '；补充语言复核说明：' + reason
+            if pos not in explicitly_resolved:
+                needs_review = needs_review or conflict_review
         reasons=[]
         if styles==['unknown']:reasons.append('风格待辨识')
         if language is None:reasons.append('语言待辨识')
