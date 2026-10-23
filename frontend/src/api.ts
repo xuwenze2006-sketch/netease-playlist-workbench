@@ -16,8 +16,8 @@ import { normalizeLocalTracks, normalizeState } from './normalize';
 import { normalizeClassification, validClassificationQuery } from './classificationData';
 import { validDraftRequest } from './classificationQuality';
 import { normalizeClassificationChanges, validChangesQuery } from './classificationChangesData';
-import { normalizeRecordingReviews, normalizeRecordingReview, validReviewBundleName } from './recordingReviewData';
-import type { RecordingReviewCatalog, RecordingReviewDetail } from './recordingReviewData';
+import { normalizeRecordingReviews, normalizeRecordingReview, validReviewBundleName, expectedRecordingReviewSave } from './recordingReviewData';
+import type { RecordingReviewCatalog, RecordingReviewDetail, RecordingReviewSaveRequest } from './recordingReviewData';
 
 export class LocalApiError extends Error {
   readonly acceptanceUnknown: boolean;
@@ -55,6 +55,7 @@ async function requestJson<T>(
   const controller = new AbortController();
   let timedOut = false;
   const submitted = body !== undefined;
+  const recordingSave = submitted && path === '/api/recording-reviews/save';
   const cancelledMessage = '本次请求等待已取消。已发送任务不会自动重试，请先查看任务记录。';
   if (signal?.aborted) throw new LocalApiError(cancelledMessage);
   const cancel = () => controller.abort();
@@ -107,7 +108,7 @@ async function requestJson<T>(
         submitted && response.ok
           ? '任务响应无法读取，后台任务可能已接受；请先恢复状态并核对。请勿再次提交。'
           : '本机服务返回了无法读取的结果，请重新打开工作台。',
-        submitted && response.ok,
+        submitted && (response.ok || recordingSave && response.status >= 500),
       );
     }
     if (!response.ok) {
@@ -143,7 +144,7 @@ async function requestJson<T>(
         typeof value.message === 'string'
           ? value.message.slice(0, 400)
           : '本次请求未被接受，请检查任务状态后再操作。';
-      throw new LocalApiError(message);
+      throw new LocalApiError(message, recordingSave && response.status >= 500);
     }
     return value as T;
   } finally {
@@ -172,6 +173,31 @@ export async function fetchRecordingReview(session: string, bundle: string, sign
   const value = await requestJson(session, `/api/recording-reviews/detail?bundle=${encodeURIComponent(bundle)}`, undefined, signal);
   try { return normalizeRecordingReview(value, bundle); }
   catch { throw new LocalApiError('核验内容格式不完整或与所选记录不符，请重新读取或检查本地记录。'); }
+}
+
+export async function postRecordingReview(session: string, request: RecordingReviewSaveRequest,
+  base: RecordingReviewDetail, signal?: AbortSignal): Promise<RecordingReviewDetail> {
+  let expected: RecordingReviewDetail;
+  let frozen: RecordingReviewSaveRequest;
+  try {
+    expected = expectedRecordingReviewSave(base, request);
+    frozen = JSON.parse(JSON.stringify(request)) as RecordingReviewSaveRequest;
+  } catch (error) {
+    throw new LocalApiError(error instanceof Error && error.message.includes('64 KiB') ? error.message :
+      '核验填写内容或基础记录已失效，请核对来源、证据字段和场景判断后再保存。');
+  }
+  const value = await requestJson<unknown>(session, '/api/recording-reviews/save', frozen, signal);
+  try {
+    if (!value || typeof value !== 'object' || !('status' in value) || value.status !== 'saved' ||
+      !('bundle' in value) || value.bundle !== frozen.target_bundle || !('replayed' in value) || typeof value.replayed !== 'boolean' ||
+      !('detail' in value)) throw new Error();
+    const detail = normalizeRecordingReview(value.detail, frozen.target_bundle);
+    if (!detail.review_sha256 || detail.created_at !== expected.created_at ||
+      JSON.stringify(detail.preview) !== JSON.stringify(expected.preview)) throw new Error();
+    return detail;
+  } catch {
+    throw new LocalApiError('保存回执无法与提交内容完整核对；请保留本次填写，使用同一次保存请求核对并重试。', true);
+  }
 }
 
 export async function fetchClassification(

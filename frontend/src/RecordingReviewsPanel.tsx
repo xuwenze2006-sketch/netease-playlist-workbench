@@ -1,7 +1,10 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { fetchRecordingReview, fetchRecordingReviews, readSession } from './api';
-import { isSceneComplete } from './recordingReviewData';
+import type { ReactNode } from 'react';
+import { fetchRecordingReview, fetchRecordingReviews, postRecordingReview, readSession } from './api';
+import { createRecordingReviewSave, isSceneComplete } from './recordingReviewData';
 import type { RecordingReviewCatalog, RecordingReviewDetail, RecordingReviewRow } from './recordingReviewData';
+import { RecordingReviewEditor } from './RecordingReviewEditor';
+import type { RecordingReviewSession } from './RecordingReviewEditor';
 import { useSearchInput } from './useSearchInput';
 import './recordingReviews.css';
 
@@ -28,7 +31,7 @@ function failureText(error: unknown) {
     ? Array.from(error.message.trim()).slice(0, 500).join('') : '请重试读取。';
 }
 
-function ReviewCard({ row }: { row: RecordingReviewRow }) {
+function ReviewCard({ row, children }: { row: RecordingReviewRow; children?: ReactNode }) {
   const id = useId();
   const scope = [...new Set([...row.before_scenes, ...row.scene_decisions.map((item) => item.scene)])];
   return <article className="recording-review-card" aria-labelledby={`${id}-title`}>
@@ -76,6 +79,7 @@ function ReviewCard({ row }: { row: RecordingReviewRow }) {
         </li>)}
       </ul> : <p>未记录试听区间。</p>}
     </details>
+    {children}
   </article>;
 }
 
@@ -95,19 +99,35 @@ export function RecordingReviewsPanel({ active = true }: { active?: boolean }) {
   const [refresh, setRefresh] = useState(0);
   const [detailRetry, setDetailRetry] = useState(0);
   const [notice, setNotice] = useState('');
+  const [sessions, setSessions] = useState<Record<string, RecordingReviewSession>>({});
+  const sessionsRef = useRef(sessions);
+  const [saveBusy, setSaveBusy] = useState(false);
+  const saveLock = useRef(false);
+  const activeRef = useRef(active);
+  const navigation = useRef(0);
+  if (activeRef.current !== active) { navigation.current++; activeRef.current = active; }
+  const catalogGeneration = useRef(0);
+  const detailGeneration = useRef(0);
+  const keyFor = (bundle: string, position: number) => `${bundle}:${position}`;
+  function updateSession(key: string, change: (old: RecordingReviewSession | undefined) => RecordingReviewSession | undefined) {
+    const next = { ...sessionsRef.current }, value = change(next[key]);
+    if (value) next[key] = value; else delete next[key];
+    sessionsRef.current = next; setSessions(next);
+  }
   const [filter, setFilter] = useState<Filter>('all');
   const { value: queryInput, query, setValue: setQuery, ...searchHandlers } = useSearchInput();
 
   useEffect(() => {
     if (!active) return;
     const controller = new AbortController();
+    const generation = ++catalogGeneration.current;
     let disposed = false;
     setCatalogLoading(true);
     setCatalogError('');
     void (async () => {
       try {
         const result = await fetchRecordingReviews(readSession(), controller.signal);
-        if (disposed) return;
+        if (disposed || generation !== catalogGeneration.current) return;
         setCatalog(result);
         if (selectedRef.current && !result.bundles.some((bundle) => bundle.name === selectedRef.current)) {
           setSelected('');
@@ -117,9 +137,9 @@ export function RecordingReviewsPanel({ active = true }: { active?: boolean }) {
           setNotice('所选核验包已不在列表中，请重新选择。');
         }
       } catch (error) {
-        if (!disposed) setCatalogError(failureText(error));
+        if (!disposed && generation === catalogGeneration.current) setCatalogError(failureText(error));
       } finally {
-        if (!disposed) setCatalogLoading(false);
+        if (!disposed && generation === catalogGeneration.current) setCatalogLoading(false);
       }
     })();
     return () => { disposed = true; controller.abort(); };
@@ -128,24 +148,29 @@ export function RecordingReviewsPanel({ active = true }: { active?: boolean }) {
   useEffect(() => {
     if (!active || !selected) return;
     const controller = new AbortController();
+    const generation = ++detailGeneration.current;
     let disposed = false;
     setDetailLoading(true);
     setDetailError('');
     void (async () => {
       try {
         const result = await fetchRecordingReview(readSession(), selected, controller.signal);
-        if (!disposed) setDetail(result);
+        if (!disposed && generation === detailGeneration.current) setDetail(result);
       } catch (error) {
-        if (!disposed) setDetailError(failureText(error));
+        if (!disposed && generation === detailGeneration.current) setDetailError(failureText(error));
       } finally {
-        if (!disposed) setDetailLoading(false);
+        if (!disposed && generation === detailGeneration.current) setDetailLoading(false);
       }
     })();
     return () => { disposed = true; controller.abort(); };
   }, [active, selected, refresh, detailRetry]);
 
   function selectBundle(bundle: string) {
+    navigation.current++;
+    detailGeneration.current++;
+    selectedRef.current = bundle;
     setSelected(bundle);
+    setDetailRetry(value => value + 1);
     setDetail(null);
     setDetailLoading(!!bundle);
     setDetailError('');
@@ -169,23 +194,77 @@ export function RecordingReviewsPanel({ active = true }: { active?: boolean }) {
   const summary = preview?.summary;
   const hasFilters = !!queryInput || filter !== 'all';
 
+  function blockedFor(session: RecordingReviewSession) {
+    if (!active || !current || stale || catalogFailed || catalogLoading) return '当前依据尚未确认，请刷新并成功读取原核验包后保存。输入仍保留。';
+    if (session.base.review_sha256 !== current.review_sha256 || session.base.preview.source_sha256 !== current.preview.source_sha256)
+      return '原始核验包或分类来源已变化，旧输入仍保留，但不能绑定新依据保存。请核对后明确放弃旧填写，再重新填写。';
+    return '';
+  }
+  async function saveSession(key: string) {
+    const session = sessionsRef.current[key];
+    if (!session || saveLock.current || (!session.pending && blockedFor(session))) return;
+    let pending = session.pending;
+    const wasPending = !!pending;
+    if (!pending) {
+      try { pending = { request: createRecordingReviewSave(session.base, Number(key.slice(key.lastIndexOf(':') + 1)), session.edit),
+        base: structuredClone(session.base) }; }
+      catch (error) { updateSession(key, old => old && { ...old, error: failureText(error) }); return; }
+    }
+    saveLock.current = true; setSaveBusy(true);
+    const startedNavigation = navigation.current;
+    updateSession(key, old => old && { ...old, pending, saving: true, error: '', confirmDiscard: false });
+    try {
+      const result = await postRecordingReview(readSession(), pending.request, pending.base);
+      updateSession(key, () => undefined);
+      catalogGeneration.current++;
+      setCatalogLoading(false); setCatalogError('');
+      setCatalog(old => ({ status: 'available', limit: 100, truncated: false,
+        bundles: old?.bundles.some(item => item.name === result.bundle) ? old.bundles : [...(old?.bundles ?? []), { name: result.bundle }] }));
+      setNotice(`已另存并核对新核验包：${result.bundle}。可在核验包列表查看。`);
+      if (activeRef.current && navigation.current === startedNavigation && selectedRef.current === session.base.bundle) {
+        detailGeneration.current++;
+        selectedRef.current = result.bundle;
+        setSelected(result.bundle); setDetail(result); setDetailError(''); setDetailLoading(false); setQuery(''); setFilter('all');
+      }
+    } catch (error) {
+      const unknown = wasPending || (typeof error === 'object' && error !== null && 'acceptanceUnknown' in error && error.acceptanceUnknown === true);
+      updateSession(key, old => old && { ...old, pending: unknown ? pending : undefined, saving: false, error: failureText(error) });
+      if (!unknown && selectedRef.current === session.base.bundle) setDetailError('保存被拒绝，请刷新读取依据后继续保存。填写内容仍保留。');
+    } finally { saveLock.current = false; setSaveBusy(false); }
+  }
+  function renderEditor(bundle: string, row: RecordingReviewRow, base?: RecordingReviewDetail) {
+    const key = keyFor(bundle, row.position), session = sessions[key];
+    if (session?.expanded) {
+      const original = session.base.preview.records.find(item => item.position === row.position)!;
+      return <RecordingReviewEditor row={original} session={session} blocked={blockedFor(session)}
+        onChange={edit => updateSession(key, old => old && !old.pending && !old.saving ? { ...old, edit, error: '', confirmDiscard: false } : old)}
+        onSave={() => { void saveSession(key); }}
+        onCollapse={() => updateSession(key, old => old && { ...old, expanded: false })}
+        onDiscard={confirmed => updateSession(key, old => old && !old.pending && !old.saving ? confirmed ? undefined : { ...old, confirmDiscard: true } : old)} />;
+    }
+    if (session || (base?.review_sha256 && !stale)) return <button type="button" className="button secondary recording-review-open-editor"
+      onClick={() => updateSession(key, old => old ? { ...old, expanded: true } : { base: structuredClone(base!), expanded: true,
+        edit: structuredClone({ recording: row.recording, scene_decisions: row.scene_decisions }) })}>{session ? '继续填写核验' : '填写核验'}</button>;
+    return null;
+  }
+
   return <div className="recording-reviews-panel" hidden={!active}>
     <div className="page-heading">
       <div><span className="eyebrow">RECORDING REVIEWS</span>
         <h1 id={active ? 'page-title' : `${id}-inactive-title`}>录音核验</h1>
-        <p>查看保存的录音依据与场景收录变化。</p></div>
-      <button type="button" className="button secondary" disabled={catalogLoading || detailLoading} onClick={refreshAll}>
+        <p>查看、填写录音依据与场景判断，另存新核验包。</p></div>
+      <button type="button" className="button secondary" disabled={catalogLoading || detailLoading || saveBusy} onClick={refreshAll}>
         刷新核验记录
       </button>
     </div>
     <div className="recording-review-scope">
-      <p>只读预览 · 各核验包独立展示，未自动合并，未改歌单。</p>
+      <p>原始资料只读 · 填写后另存新包，各核验包独立展示，未自动合并，未改歌单。</p>
       <p>目录匹配不能代替试听；“有试听记录”是文件内保存的声明，本程序未独立验证试听是否完成。</p>
       <p>场景判断仅覆盖原收录及本包提及的场景；缺少判断时保留原收录。</p>
     </div>
     <section className="recording-review-selector" aria-label="选择核验包">
       <label htmlFor={`${id}-bundle`}>核验包</label>
-      <select id={`${id}-bundle`} value={selected} disabled={catalogLoading || catalogFailed || !catalog?.bundles.length}
+      <select id={`${id}-bundle`} value={selected} disabled={saveBusy || catalogLoading || catalogFailed || !catalog?.bundles.length}
         onChange={(event) => selectBundle(event.currentTarget.value)}>
         <option value="">请选择核验包</option>
         {catalog?.bundles.map((bundle) => <option value={bundle.name} key={bundle.name}>{bundle.name}</option>)}
@@ -199,6 +278,12 @@ export function RecordingReviewsPanel({ active = true }: { active?: boolean }) {
       </div>}
       {catalog?.status === 'empty' && !catalogLoading && !catalogFailed && <p>尚无已保存的核验包。</p>}
       {notice && <p role="status">{notice}</p>}
+      {Object.keys(sessions).length > 0 && <div className="recording-review-drafts" aria-label="保留的填写">
+        <p>保留 {Object.keys(sessions).length} 首填写（包括尚待核对的保存）；筛选、切包和页面内导航不会清除。</p>
+        {Object.entries(sessions).map(([key, session]) => <button type="button" key={key} disabled={saveBusy}
+          onClick={() => { selectBundle(session.base.bundle); updateSession(key, old => old && { ...old, expanded: true }); }}>
+          {session.base.bundle} · 第 {key.slice(key.lastIndexOf(':') + 1)} 首{session.pending ? '（待核对）' : ''}</button>)}
+      </div>}
     </section>
     {selected && <section className="recording-review-results" aria-label="核验结果" aria-busy={detailLoading}>
       {detailLoading && <p role="status">正在读取所选核验包…</p>}
@@ -210,6 +295,7 @@ export function RecordingReviewsPanel({ active = true }: { active?: boolean }) {
       </div>}
       {stale && <p className="recording-review-warning" role="status">以下为上次读取的核验内容，仅供参考，不能作为当前核验结果。</p>}
       {current && summary && <>
+        {!current.review_sha256 && <p className="recording-review-warning">缺少核验文件校验值，当前包仅可查看。请更新服务并刷新后填写。</p>}
         <div className="recording-review-bundle-heading"><h2>{current.bundle}</h2>
           <p>记录时间：{dateText(current.created_at)}</p></div>
         <dl className="recording-review-summary" aria-label="核验包汇总">
@@ -230,9 +316,17 @@ export function RecordingReviewsPanel({ active = true }: { active?: boolean }) {
           {hasFilters && <button type="button" onClick={() => { setQuery(''); setFilter('all'); }}>清除筛选</button>}
         </div>
         <p className="recording-review-result-count" role="status">显示 {rows.length} / {summary.reviewed_records} 首</p>
-        {rows.length ? rows.map((row) => <ReviewCard row={row} key={`${current.bundle}-${row.position}`} />) :
+        {rows.length ? rows.map((row) => <ReviewCard row={row} key={`${current.bundle}-${row.position}`}>
+          {renderEditor(current.bundle, row, current)}
+        </ReviewCard>) :
           <p className="recording-review-empty">没有符合当前筛选的曲目，可清除筛选后查看全部。</p>}
       </>}
+      {Object.entries(sessions).filter(([, session]) => session.base.bundle === selected).map(([key, session]) => {
+        const position = Number(key.slice(key.lastIndexOf(':') + 1));
+        if (current?.preview.records.some(row => row.position === position)) return null;
+        const row = session.base.preview.records.find(item => item.position === position)!;
+        return <ReviewCard key={key} row={row}>{renderEditor(session.base.bundle, row)}</ReviewCard>;
+      })}
     </section>}
   </div>;
 }

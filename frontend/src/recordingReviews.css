@@ -48,8 +48,30 @@
 .recording-review-evidence ul { margin: 5px 0; padding-left: 20px; }
 .recording-review-evidence li + li { margin-top: 10px; }
 .recording-review-evidence a { color: #a63243; text-decoration: underline; text-underline-offset: 3px; }
+.recording-review-open-editor { margin-top: 18px; }
+.recording-review-editor { margin-top: 20px; padding-top: 18px; border-top: 2px solid #e6d4dc; }
+.recording-review-editor-heading, .recording-review-editor-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.recording-review-editor-heading { justify-content: space-between; }
+.recording-review-editor h4 { margin: 0; font-size: 15px; }
+.recording-review-editor h5 { margin: 18px 0 4px; font-size: 13px; }
+.recording-review-editor fieldset { min-width: 0; margin: 15px 0; padding: 14px; border: 1px solid #ded6df; border-radius: 8px; }
+.recording-review-editor legend { font-weight: 600; padding: 0 6px; }
+.recording-review-editor label { display: block; margin: 9px 0 5px; font-weight: 600; }
+.recording-review-editor :is(input, textarea, select) { width: 100%; min-width: 0; box-sizing: border-box; padding: 10px; border: 1px solid #d7cdd8; border-radius: 6px; font: inherit; background: #fff; color: inherit; }
+.recording-review-editor textarea { resize: vertical; }
+.recording-review-editor :is(button), .recording-review-drafts button { min-height: 40px; padding: 8px 12px; border: 1px solid #d7cdd8; border-radius: 7px; background: #fff; color: inherit; font: inherit; cursor: pointer; }
+.recording-review-editor button:disabled, .recording-review-editor fieldset:disabled { opacity: .65; cursor: default; }
+.recording-review-editor .recording-review-editor-item { background: #faf8fa; }
+.recording-review-editor-item > button { margin-top: 12px; }
+.recording-review-editor-scenes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 16px; }
+.recording-review-editor-actions .primary { background: var(--red); color: #fff; }
+.recording-review-drafts { padding: 12px; background: #f7f4f8; border-radius: 8px; }
+.recording-review-drafts button { margin: 4px 6px 4px 0; max-width: 100%; overflow-wrap: anywhere; }
+.recording-reviews-panel textarea:focus-visible { outline: 2px solid var(--red); outline-offset: 3px; }
 .recording-reviews-panel :is(button, input, select, summary, a):focus-visible { outline: 2px solid var(--red); outline-offset: 3px; }
 @media (max-width: 700px) {
+  .recording-review-editor-scenes { grid-template-columns: minmax(0, 1fr); }
+  .recording-review-editor fieldset { padding: 10px; }
   .recording-review-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .recording-review-card { padding: 14px; }
   .recording-review-memberships { gap: 6px 8px; padding: 11px; }

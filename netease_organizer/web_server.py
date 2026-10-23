@@ -31,7 +31,8 @@ from .web_classification import (
 )
 from .classification_drafts import DraftConflict, DraftError
 from .web_recording_reviews import (
-    RecordingReviewReadError, list_recording_reviews, read_recording_review, validate_bundle_name,
+    RecordingReviewReadError, RecordingReviewSaveError, list_recording_reviews, read_recording_review,
+    save_recording_review, validate_bundle_name,
 )
 
 
@@ -471,6 +472,36 @@ class WorkbenchApplication:
                 return 400, {'accepted': False, 'message': '修正草稿参数无效，请检查标签和修正理由。'}
             except Exception:
                 return 503, {'accepted': False, 'message': '本地草稿暂时无法保存，请重新读取后核对。'}
+
+    def save_recording_review(self, raw, *, session=None):
+        """Serialize an immutable local save and guard the document at commit time."""
+        with self._records_gate:
+            with self.lock:
+                generation = self.session
+
+            def before_commit():
+                with self.lock:
+                    if generation != self.session or session is not None and not self.valid_session(session):
+                        raise RecordingReviewSaveError(403, 'recording_review_session_changed',
+                                                       '页面会话已更新，本次另存未执行，请重新读取核验记录。')
+                    if self.busy or self.stopping or self.stop_requested or self.page_closing:
+                        raise RecordingReviewSaveError(409, 'recording_review_workbench_busy',
+                                                       '已有任务正在运行或工作台正在关闭，本次另存未执行。')
+
+            try:
+                before_commit()
+                result = save_recording_review(self.project, raw, before_commit=before_commit)
+                with self.lock:
+                    if (generation != self.session or session is not None and not self.valid_session(session)
+                            or self.busy or self.stopping or self.stop_requested or self.page_closing):
+                        raise RecordingReviewSaveError(503, 'recording_review_save_unconfirmed',
+                                                       '保存后页面会话或工作台状态已变化，结果尚未确认；请保留同一请求核对重试。')
+                return 200, result
+            except RecordingReviewSaveError as error:
+                return error.status, {'accepted': False, 'error_code': error.code, 'message': str(error)}
+            except Exception:
+                return 503, {'accepted': False, 'error_code': 'recording_review_save_unconfirmed',
+                             'message': '核验保存结果尚未确认；请保留当前内容并使用同一请求核对重试。'}
 
     def _update_connection(self, result):
         for field in self.connection:
@@ -1098,7 +1129,8 @@ class _WorkbenchHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._guard():
             return
-        if self.path not in ("/api/actions", "/api/pause", "/api/close", "/api/update", "/api/classification/draft"):
+        if self.path not in ("/api/actions", "/api/pause", "/api/close", "/api/update", "/api/classification/draft",
+                             "/api/recording-reviews/save"):
             self._json(404, {"accepted": False, "message": "没有此本地 API。"})
             return
         lengths = self.headers.get_all("Content-Length", [])
@@ -1118,6 +1150,11 @@ class _WorkbenchHandler(BaseHTTPRequestHandler):
             if len(body) != length:
                 raise ValueError
             raw = json.loads(body.decode("utf-8"), object_pairs_hook=_unique_object, parse_constant=_reject_constant)
+            if self.path == '/api/recording-reviews/save':
+                self.server.application.touch()
+                status, result = self.server.application.save_recording_review(raw, session=self._request_session)
+                self._json(status, result)
+                return
             if self.path == '/api/classification/draft':
                 self.server.application.touch()
                 status, result = self.server.application.save_classification_draft(raw, session=self._request_session)

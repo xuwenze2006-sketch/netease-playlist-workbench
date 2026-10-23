@@ -23,7 +23,11 @@ export type RecordingReviewPreview = {
   summary: RecordingReviewSummary; records: RecordingReviewRow[];
 };
 export type RecordingReviewDetail = {
-  status: 'available'; bundle: string; created_at: string; preview: RecordingReviewPreview;
+  status: 'available'; bundle: string; created_at: string; preview: RecordingReviewPreview; review_sha256?: string;
+};
+export type RecordingReviewEdit = Pick<RecordingReviewRow, 'recording' | 'scene_decisions'>;
+export type RecordingReviewSaveRequest = RecordingReviewEdit & {
+  base_bundle: string; base_sha256: string; target_bundle: string; created_at: string; position: number;
 };
 
 function invalid(): never { throw new Error('invalid recording review data'); }
@@ -134,6 +138,7 @@ export function normalizeRecordingReview(value: unknown, bundle: string): Record
   const raw = object(value), preview = object(raw.preview), rawSummary = object(preview.summary);
   if (raw.status !== 'available' || name(raw.bundle) !== bundle || preview.kind !== 'classification_scene_review_preview' ||
     typeof preview.source_sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(preview.source_sha256)) invalid();
+  if (raw.review_sha256 !== undefined && (typeof raw.review_sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(raw.review_sha256))) invalid();
   const created_at = text(raw.created_at, false, 64);
   if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/.test(created_at) ||
     !Number.isFinite(Date.parse(created_at))) invalid();
@@ -143,6 +148,16 @@ export function normalizeRecordingReview(value: unknown, bundle: string): Record
   const records = array(preview.records, 50, parseRow);
   if (!records.length) invalid();
   unique(records.map(row => row.position));
+  const summary = summarizeRecordingReviews(records);
+  for (const key of Object.keys(summary) as (keyof RecordingReviewSummary)[]) {
+    if (integer(rawSummary[key]) !== summary[key]) invalid();
+  }
+  return { status: 'available', bundle, created_at, preview: { kind: 'classification_scene_review_preview',
+    source_sha256: preview.source_sha256, records, summary },
+    ...(typeof raw.review_sha256 === 'string' ? {review_sha256: raw.review_sha256} : {}) };
+}
+
+function summarizeRecordingReviews(records: RecordingReviewRow[]): RecordingReviewSummary {
   const summary: RecordingReviewSummary = { reviewed_records: records.length, metadata_matched_records: 0,
     audio_verified_records: 0, scene_verified_records: 0, uncertain_records: 0, partial_scene_records: 0, added_count: 0, removed_count: 0 };
   for (const row of records) {
@@ -154,9 +169,52 @@ export function normalizeRecordingReview(value: unknown, bundle: string): Record
     summary.partial_scene_records += Number(!complete && row.scene_decisions.some(item => item.decision !== 'uncertain'));
     summary.added_count += row.added_scenes.length; summary.removed_count += row.removed_scenes.length;
   }
-  for (const key of Object.keys(summary) as (keyof RecordingReviewSummary)[]) {
-    if (integer(rawSummary[key]) !== summary[key]) invalid();
+  return summary;
+}
+
+export function previewRecordingReviewEdit(row: RecordingReviewRow, edit: RecordingReviewEdit): RecordingReviewRow {
+  const expected = [...row.before_scenes];
+  for (const item of edit.scene_decisions) {
+    const index = expected.indexOf(item.scene);
+    if (item.decision === 'unsuitable' && index >= 0) expected.splice(index, 1);
+    if (item.decision === 'suitable' && index < 0) expected.push(item.scene);
   }
-  return { status: 'available', bundle, created_at, preview: { kind: 'classification_scene_review_preview',
-    source_sha256: preview.source_sha256, records, summary } };
+  return parseRow({...row, ...edit, after_scenes: expected,
+    added_scenes: expected.filter(scene => !row.before_scenes.includes(scene)),
+    removed_scenes: row.before_scenes.filter(scene => !expected.includes(scene))});
+}
+
+export function recordingReviewEditError(row: RecordingReviewRow, edit: RecordingReviewEdit): string {
+  try { previewRecordingReviewEdit(row, edit); return ''; }
+  catch {
+    if (edit.recording.status !== 'audio_verified' && edit.scene_decisions.some(item => item.decision !== 'uncertain'))
+      return '明确适合或不适合需要具体音频来源和真实试听区间；尚未试听请选择待核验。';
+    return '请检查录音状态、必填依据、来源链接、试听区间和场景理由；预览收录最多保留 3 个场景。';
+  }
+}
+
+export function expectedRecordingReviewSave(base: RecordingReviewDetail, request: RecordingReviewSaveRequest): RecordingReviewDetail {
+  const original = normalizeRecordingReview(base, base.bundle), raw = object(request);
+  const fields = ['base_bundle', 'base_sha256', 'target_bundle', 'created_at', 'position', 'recording', 'scene_decisions'];
+  if (Object.keys(raw).length !== fields.length || fields.some(field => !(field in raw)) ||
+    !original.review_sha256 || raw.base_bundle !== original.bundle || raw.base_sha256 !== original.review_sha256 ||
+    typeof raw.target_bundle !== 'string' || !/^review-[a-f0-9]{32}$/.test(raw.target_bundle) ||
+    raw.target_bundle === raw.base_bundle) invalid();
+  const position = integer(raw.position, 1), row = original.preview.records.find(item => item.position === position);
+  if (!row) invalid();
+  const updated = previewRecordingReviewEdit(row, request);
+  const records = original.preview.records.map(item => item.position === position ? updated : item);
+  const expected = normalizeRecordingReview({ status: 'available', bundle: request.target_bundle,
+    created_at: request.created_at, preview: {...original.preview, records, summary: summarizeRecordingReviews(records)} }, request.target_bundle);
+  if (new TextEncoder().encode(JSON.stringify(request)).byteLength > 65536)
+    throw new Error('本次核验内容超过 64 KiB，请缩短来源说明或试听备注后保存。');
+  return expected;
+}
+
+export function createRecordingReviewSave(base: RecordingReviewDetail, position: number, edit: RecordingReviewEdit): RecordingReviewSaveRequest {
+  const request = {base_bundle: base.bundle, base_sha256: base.review_sha256 ?? '',
+    target_bundle: `review-${crypto.randomUUID().replace(/-/g, '')}`, created_at: new Date().toISOString(), position,
+    recording: edit.recording, scene_decisions: edit.scene_decisions};
+  expectedRecordingReviewSave(base, request);
+  return JSON.parse(JSON.stringify(request)) as RecordingReviewSaveRequest;
 }
