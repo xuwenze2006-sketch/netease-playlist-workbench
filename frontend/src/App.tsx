@@ -25,14 +25,16 @@ import { DiagnosticNotice, needsWriteInspection, recordNotSaved } from './Diagno
 import { RecoveryNotice } from './RecoveryNotice';
 import { PlaylistDetails } from './PlaylistDetails';
 import { ClassificationPanel } from './ClassificationPanel';
+import { RecordingReviewsPanel } from './RecordingReviewsPanel';
 import { useSearchInput } from './useSearchInput';
 import type { IconName } from './icons';
 
-type Page = 'overview' | 'playlists' | 'classification' | 'history' | 'settings';
+type Page = 'overview' | 'playlists' | 'classification' | 'recordings' | 'history' | 'settings';
 const NAV: { page: Page; label: string; icon: IconName }[] = [
   { page: 'overview', label: '概览', icon: 'home' },
   { page: 'playlists', label: '我的歌单', icon: 'music' },
   { page: 'classification', label: '分类成果', icon: 'file' },
+  { page: 'recordings', label: '录音核验', icon: 'file' },
   { page: 'history', label: '任务记录', icon: 'history' },
   { page: 'settings', label: '接入设置', icon: 'settings' },
 ];
@@ -354,6 +356,7 @@ function JobPanel({
 export default function App() {
   const [page, setPage] = useState<Page>(currentPage);
   const [classificationVisited, setClassificationVisited] = useState(() => currentPage() === 'classification');
+  const [recordingsVisited, setRecordingsVisited] = useState(() => currentPage() === 'recordings');
   const [state, setState] = useState<WorkbenchState | null>(null);
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState('');
@@ -478,6 +481,7 @@ export default function App() {
   }, []);
   useEffect(() => {
     if (page === 'classification') setClassificationVisited(true);
+    if (page === 'recordings') setRecordingsVisited(true);
   }, [page]);
   useEffect(() => {
     if (previousPage.current === page) return;
@@ -1051,7 +1055,7 @@ export default function App() {
         </div>
       </aside>
       <div
-        className={`workspace ${active && (page === 'playlists' || page === 'settings' || page === 'classification') ? 'with-task-strip' : ''}`}
+        className={`workspace ${active && (page === 'playlists' || page === 'settings' || page === 'classification' || page === 'recordings') ? 'with-task-strip' : ''}`}
       >
         <header className="topbar">
           <div className="breadcrumb">
@@ -1519,6 +1523,7 @@ export default function App() {
             </>
           )}
           {(page === 'classification' || classificationVisited) && <ClassificationPanel active={page === 'classification'} />}
+          {(page === 'recordings' || recordingsVisited) && <RecordingReviewsPanel active={page === 'recordings'} />}
           {page === 'history' && (
             <>
               <div className="page-heading">
@@ -1810,7 +1815,7 @@ export default function App() {
         </main>
         {active &&
           state?.job &&
-          (page === 'playlists' || page === 'settings' || page === 'classification') && (
+          (page === 'playlists' || page === 'settings' || page === 'classification' || page === 'recordings') && (
             <section className="task-strip" aria-label="当前任务">
               <span className="task-strip-icon">
                 <Icon name="refresh" size={19} />

@@ -16,6 +16,8 @@ import { normalizeLocalTracks, normalizeState } from './normalize';
 import { normalizeClassification, validClassificationQuery } from './classificationData';
 import { validDraftRequest } from './classificationQuality';
 import { normalizeClassificationChanges, validChangesQuery } from './classificationChangesData';
+import { normalizeRecordingReviews, normalizeRecordingReview, validReviewBundleName } from './recordingReviewData';
+import type { RecordingReviewCatalog, RecordingReviewDetail } from './recordingReviewData';
 
 export class LocalApiError extends Error {
   readonly acceptanceUnknown: boolean;
@@ -157,6 +159,19 @@ export async function fetchState(session: string, signal?: AbortSignal): Promise
   } catch {
     throw new LocalApiError('本地状态格式不完整，请重新打开工作台或检查本机服务。');
   }
+}
+
+export async function fetchRecordingReviews(session: string, signal?: AbortSignal): Promise<RecordingReviewCatalog> {
+  const value = await requestJson(session, '/api/recording-reviews', undefined, signal);
+  try { return normalizeRecordingReviews(value); }
+  catch { throw new LocalApiError('核验记录目录格式不完整，请重新读取或检查本地记录。'); }
+}
+
+export async function fetchRecordingReview(session: string, bundle: string, signal?: AbortSignal): Promise<RecordingReviewDetail> {
+  if (!validReviewBundleName(bundle)) throw new LocalApiError('核验记录名称无效，请重新选择。');
+  const value = await requestJson(session, `/api/recording-reviews/detail?bundle=${encodeURIComponent(bundle)}`, undefined, signal);
+  try { return normalizeRecordingReview(value, bundle); }
+  catch { throw new LocalApiError('核验内容格式不完整或与所选记录不符，请重新读取或检查本地记录。'); }
 }
 
 export async function fetchClassification(

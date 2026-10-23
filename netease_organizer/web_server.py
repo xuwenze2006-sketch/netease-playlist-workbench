@@ -30,6 +30,9 @@ from .web_classification import (
     _parameters as _classification_parameters,
 )
 from .classification_drafts import DraftConflict, DraftError
+from .web_recording_reviews import (
+    RecordingReviewReadError, list_recording_reviews, read_recording_review, validate_bundle_name,
+)
 
 
 _MAX_BODY = 65536
@@ -923,6 +926,39 @@ class _WorkbenchHandler(BaseHTTPRequestHandler):
         if path == "/api/state":
             self.server.application.touch()
             self._json(200, self.server.application.state())
+            return
+        if path in ('/api/recording-reviews', '/api/recording-reviews/detail'):
+            try:
+                if len(url.query) > 1024:
+                    raise ValueError()
+                pairs = parse_qsl(url.query, keep_blank_values=True, strict_parsing=True,
+                                  encoding='utf-8', errors='strict', max_num_fields=1)
+                parameters = dict(pairs)
+                if path.endswith('/detail'):
+                    if len(pairs) != 1 or set(parameters) != {'bundle'}:
+                        raise ValueError()
+                    validate_bundle_name(parameters['bundle'])
+                elif pairs:
+                    raise ValueError()
+            except (ValueError, UnicodeError):
+                self._json(400, {'accepted': False, 'message': '核验记录查询参数无效。'})
+                return
+            application = self.server.application
+            try:
+                # Bounded disk reads stay outside the status/session lock and task dispatcher.
+                data = (read_recording_review(application.project, parameters['bundle'])
+                        if path.endswith('/detail') else list_recording_reviews(application.project))
+                status = 200
+            except RecordingReviewReadError as error:
+                status, data = 503, {'accepted': False, 'error_code': error.code, 'message': str(error)}
+            except Exception:
+                status, data = 503, {'accepted': False, 'message': '本地核验记录暂时无法读取，请稍后重试；已有记录未修改。'}
+            # A document replacement during a read cannot receive the preceding session's data.
+            if not application.valid_session(self._request_session):
+                self._json(403, {'accepted': False, 'message': '页面会话已更新，请重新读取核验记录。'})
+                return
+            application.touch()
+            self._json(status, data)
             return
         if path == '/api/classification':
             try:
