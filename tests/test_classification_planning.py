@@ -1,9 +1,98 @@
+import copy
 import unittest
 from netease_organizer.lyric_features import derive_lyric_features
 from netease_organizer.classification_planning import infer_language, validate_rows
 
 
+def latin_features(hints, *, count=400, scores=None, supported=None):
+    features = {'script_counts': {'latin': count}, 'language_hints': hints,
+                'original_line_count': 20, 'has_original_lyric_text': True}
+    if scores is not None:
+        features['latin_language_scores'] = scores
+    if supported is not None:
+        features['latin_evidence'] = {
+            'version': 1, 'letter_count': count, 'word_count': 100,
+            'languages': {
+                language: ({'distinct_words': 4, 'capped_hits': 12, 'matched_letters': 120}
+                           if language in supported else
+                           {'distinct_words': 0, 'capped_hits': 0, 'matched_letters': 0})
+                for language in ('en', 'es', 'fr', 'pt', 'de', 'it')},
+        }
+    return features
+
+
 class ClassificationPlanningTests(unittest.TestCase):
+    def test_multiple_latin_candidates_cannot_depend_on_hint_order(self):
+        for hints in (['en', 'fr'], ['fr', 'en'], ['en', 'en', 'fr']):
+            with self.subTest(hints=hints):
+                language, _, review = infer_language(None, latin_features(hints))
+                self.assertIsNone(language)
+                self.assertTrue(review)
+
+    def test_multiple_non_english_latin_candidates_share_other_category(self):
+        for hints in (['fr', 'pt'], ['pt', 'fr']):
+            with self.subTest(hints=hints):
+                language, _, review = infer_language(None, latin_features(hints))
+                self.assertEqual(language, 'other')
+                self.assertFalse(review)
+
+    def test_versioned_latin_evidence_overrides_contradictory_old_hint(self):
+        features = latin_features(['en'], supported=['fr'], scores={'fr': 40, 'en': 0})
+        language, _, review = infer_language(None, features)
+        self.assertEqual(language, 'other')
+        self.assertFalse(review)
+
+    def test_versioned_evidence_can_reject_old_specific_hint(self):
+        features = latin_features(['en'], supported=[], scores={'en': 0})
+        language, _, review = infer_language(None, features)
+        self.assertIsNone(language)
+        self.assertTrue(review)
+
+    def test_bad_new_evidence_cannot_fall_back_to_old_specific_hint(self):
+        good = latin_features(['en'], supported=['en'], scores={'en': 40})
+        corruptions = [None, {}, {**good['latin_evidence'], 'version': 2},
+                       {**good['latin_evidence'], 'letter_count': 399},
+                       {**good['latin_evidence'], 'word_count': True}]
+        bad_metric = copy.deepcopy(good['latin_evidence'])
+        bad_metric['languages']['en']['distinct_words'] = '4'
+        corruptions.append(bad_metric)
+        for corrupted in corruptions:
+            with self.subTest(evidence=corrupted):
+                features = {**good, 'latin_evidence': corrupted}
+                language, _, review = infer_language(None, features)
+                self.assertIsNone(language)
+                self.assertTrue(review)
+
+    def test_legacy_impossibly_sparse_latin_hint_requires_review(self):
+        features = latin_features(['en'], count=4000, scores={'en': 8})
+        language, _, review = infer_language(None, features)
+        self.assertIsNone(language)
+        self.assertTrue(review)
+
+    def test_legacy_sufficient_upper_bound_and_missing_scores_stay_compatible(self):
+        for features in (latin_features(['en'], scores={'en': 40}), latin_features(['en'])):
+            with self.subTest(features=features):
+                language, _, review = infer_language(None, features)
+                self.assertEqual(language, 'en')
+                self.assertFalse(review)
+
+    def test_new_latin_candidates_keep_explicit_recording_judgments(self):
+        for hints in (['en', 'fr'], ['fr', 'en']):
+            for model in ('en', 'other'):
+                with self.subTest(hints=hints, model=model):
+                    language, _, review = infer_language(model, latin_features(hints))
+                    self.assertEqual(language, model)
+                    self.assertEqual(review, model == 'en')
+
+    def test_new_ambiguous_latin_refrain_keeps_dominant_japanese_and_korean(self):
+        for script, hint, model in (('kana', 'ja', 'ja'), ('hangul', 'ko', 'ko')):
+            features = latin_features(['en', 'fr', hint], count=80)
+            features['script_counts'][script] = 1000
+            with self.subTest(model=model):
+                language, _, review = infer_language(None, features)
+                self.assertEqual(language, model)
+                self.assertFalse(review)
+
     def test_no_lyric_does_not_invent_instrumental_or_english(self):
         f=derive_lyric_features({'noLyric':True})
         self.assertIsNone(infer_language(None,f)[0])

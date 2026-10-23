@@ -4,6 +4,8 @@ import re
 import unicodedata
 from collections import Counter
 
+from .latin_evidence import derive_latin_evidence
+
 _STAMP = re.compile(r'\[[^\]]{0,120}\]|<\d[^>]{0,30}>')
 _CREDIT = re.compile(
     r'^(作词|作曲|词|曲|编曲|制作|制作人|录音|混音|母带|监制|发行|出品|版权|'
@@ -13,15 +15,6 @@ _CREDIT = re.compile(
 )
 _INSTRUMENTAL_LINE = re.compile(r'纯音乐\s*[,，、:：;；。\-—]?\s*(?:请欣赏|无歌词)\s*[。.!！]*')
 _YUE = set('嘅唔佢啲咗冇嘢喺嗰嚟攰嘥瞓睇俾畀咁係')
-_FUNCTIONS = {
-    'en': 'the and you your i my me we our it is are was were that this with for to of in on don can will what when how not love baby',
-    'es': 'el los las una unos unas yo tu tus mis que por para con pero como muy eres estoy amor corazon corazón',
-    'fr': 'le les une des je suis toi moi nous vous avec dans pour pas mon ma mes ton ta tes amour',
-    'pt': 'eu você voce vocês voces não nao meu minha meus minhas pra isso estou tenho coração coracao amor saudade',
-    'de': 'ich du dein deine dich mich wir nicht und ist bin das auf mit für fuer mein meine',
-    'it': 'il gli io sei sono mio mia noi voi nella della questo questa cuore amore',
-}
-_FUNCTIONS = {k: set(v.split()) for k, v in _FUNCTIONS.items()}
 _TOPICS = {
     'solitude': ('lonely', 'alone', 'miss', 'tears', 'cry', 'goodbye', '孤独', '寂寞', '眼泪', '想念', '离开', '再见'),
     'affection': ('love', 'heart', 'baby', 'darling', '喜欢', '爱情', '温柔', '拥抱', '陪伴'),
@@ -67,8 +60,7 @@ def derive_lyric_features(data):
             scripts['thai'] += 1
         elif 'a' <= char <= 'z' or (char.isalpha() and 'LATIN' in unicodedata.name(char, '')):
             scripts['latin'] += 1
-    words = Counter(re.findall(r"[a-zÀ-ÖØ-öø-ÿ]+", text))
-    scores = {language: sum(words[w] for w in terms) for language, terms in _FUNCTIONS.items()}
+    latin = derive_latin_evidence(text, scripts['latin'])
     hints = []
     if scripts['kana'] >= 6:
         hints.append('ja')
@@ -80,20 +72,15 @@ def derive_lyric_features(data):
         hints.append('ru_or_other_cyrillic')
     if scripts['arabic'] >= 10 or scripts['thai'] >= 10:
         hints.append('other_script')
-    ranked = sorted(scores, key=scores.get, reverse=True)
-    if scripts['latin'] >= 50:
-        best = ranked[0]
-        if scores[best] >= 8 and scores[best] >= scores[ranked[1]] * 1.4:
-            hints.append(best)
-        else:
-            hints.append('latin_undetermined')
+    hints.extend(latin['hints'])
     return {
         'has_original_lyric_text': bool(lines),
         'provider_no_lyric': data.get('noLyric') is True,
         'instrumental_evidence': instrumental_marker,
         'original_line_count': len(lines),
         'script_counts': {k: scripts[k] for k in ('han', 'kana', 'hangul', 'cyrillic', 'latin', 'arabic', 'thai')},
-        'latin_language_scores': scores,
+        'latin_language_scores': latin['scores'],
+        'latin_evidence': latin['evidence'],
         'language_hints': hints,
         'cantonese_specific_character_count': sum(text.count(c) for c in _YUE),
         'ukrainian_specific_character_count': sum(text.count(c) for c in 'іїєґ'),

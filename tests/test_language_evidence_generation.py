@@ -195,6 +195,56 @@ class LanguageEvidenceGenerationTests(unittest.TestCase):
             lyric_features(('今天星光照亮远方我们一起走过长路\n') * 30 + 'あいうえおか'),
         ])
 
+    def test_multiple_latin_hints_stay_unresolved_in_both_orders(self):
+        self.assert_unresolved([
+            cached_features({'latin': 400}, ['en', 'fr']),
+            cached_features({'latin': 400}, ['fr', 'en']),
+        ])
+
+    def test_legacy_sparse_hint_moves_only_language_to_pending(self):
+        self.assert_unresolved([
+            cached_features({'latin': 4000}, ['en'], latin_language_scores={'en': 8}),
+        ])
+
+    def test_current_weak_latin_evidence_does_not_create_english_playlist(self):
+        self.assert_unresolved([
+            lyric_features('baby\n' * 30),
+            lyric_features('tôi đợi người cuối trời\n' * 20),
+            lyric_features('aurinko paistaa hiljaa taivaan alla sydän laulaa\n' * 60
+                           + 'I love you and we are with my baby'),
+        ])
+
+    def test_multiple_non_english_hints_keep_the_supported_broad_category(self):
+        records, reviews, jobs, summary = self.build([
+            cached_features({'latin': 400}, ['fr', 'pt']),
+            cached_features({'latin': 400}, ['pt', 'fr']),
+        ])
+        self.assertEqual([record['language'] for record in records], ['其他与多语'] * 2)
+        self.assertEqual(reviews, [])
+        self.assertEqual(summary['pending_count'], 0)
+        self.assertEqual(jobs['语言 · 其他与多语'], [f'{position:032X}' for position in (1, 2)])
+
+    def test_weak_new_and_legacy_latin_keep_explicit_models_and_accepted_reviews(self):
+        weak = lyric_features('baby\n' * 30)
+        sparse = cached_features({'latin': 4000}, ['en'], latin_language_scores={'en': 8})
+        records, reviews, jobs, summary = self.build(
+            [weak, sparse, weak, sparse], models=['en', 'other', 'en', None], reviews=[
+                {'position': 3, 'language': 'other', 'review_note': False,
+                 'notes': '合成逐曲核验优先于功能词线索'},
+                {'position': 4, 'language': 'en', 'review_note': False,
+                 'notes': '合成具体演唱版本已核验'},
+            ])
+        self.assertEqual([record['language'] for record in records],
+                         ['英语', '其他与多语', '其他与多语', '英语'])
+        self.assertFalse(any(record['review_note'] for record in records))
+        self.assertTrue(all(record['language_evidence_note'].startswith('单曲录音复核：')
+                            for record in records[2:]))
+        self.assertEqual(reviews, [])
+        self.assertEqual(summary['pending_count'], 0)
+        self.assertNotIn('分类 · 待辨识', jobs)
+        self.assertEqual(jobs['语言 · 英语'], [f'{position:032X}' for position in (1, 4)])
+        self.assertEqual(jobs['语言 · 其他与多语'], [f'{position:032X}' for position in (2, 3)])
+
 
 if __name__ == '__main__':
     unittest.main()

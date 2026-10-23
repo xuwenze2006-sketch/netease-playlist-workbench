@@ -1,6 +1,8 @@
 """Combine reviewed recording judgments with derived original-lyric evidence."""
 import math
 
+from .latin_evidence import latin_hints
+
 SCENES={'focus':'学习专注','commute':'通勤散步','relax':'放松睡前',
         'workout':'运动提神','groove':'快乐律动','solitude':'独处释怀'}
 STYLES={'pop':'流行抒情','rnb':'R&B 与灵魂','funk':'Funk 与 Disco','jazz':'爵士与 Lo-Fi',
@@ -61,14 +63,17 @@ def infer_language(model,features):
             ambiguous.append('西里尔文字不能单独确定俄语')
     if s.get('arabic',0)>=10 or s.get('thai',0)>=10 or 'other_script' in h:
         evidence.append(('other',{'other'}))
-    latin_hint=next((x for x in h if x in ('en','es','fr','pt','de','it')),None)
+    resolved_latin=latin_hints(features)
+    latin_candidates={hint for hint in resolved_latin if hint in ('en','es','fr','pt','de','it')}
     # Small foreign refrains and credits do not replace the dominant script.
     script_total=han+kana+s.get('hangul',0)+s.get('cyrillic',0)+s.get('arabic',0)+s.get('thai',0)
     if not evidence or latin>=max(100,script_total*.45):
-        if latin_hint:
-            label='en' if latin_hint=='en' else 'other'
-            evidence.append((label,{label}))
-        elif 'latin_undetermined' in h or latin>=50:
+        if latin_candidates:
+            # Keep every supported category: selecting the first hint made a
+            # multilingual recording's result depend on cache ordering.
+            for label in sorted({'en' if hint=='en' else 'other' for hint in latin_candidates}):
+                evidence.append((label,{label}))
+        elif 'latin_undetermined' in resolved_latin or latin>=50:
             evidence.append((None,{'en','other'}))
             ambiguous.append('显著拉丁文字缺少足够的具体语言证据')
     if model=='instrumental':
@@ -83,7 +88,7 @@ def infer_language(model,features):
         return model,'具体演唱版本判断；原始歌词文字作为补充核对',False
     labels={label for label,_ in evidence}
     if len(labels)>1:
-        return None,'原歌词字段含多种显著文字，无法排除内嵌译文；待辨识',True
+        return None,'原歌词字段含多种显著语言或文字线索，无法排除内嵌译文；待辨识',True
     if ambiguous:
         return None,'；'.join(ambiguous)+'；待辨识，需核验具体录音',True
     if labels:
