@@ -13,6 +13,7 @@ from netease_organizer.classification_planning import SCENES,STYLES,LANGUAGES,in
 from netease_organizer.classification_execution import validate_plan
 from netease_organizer.service import Organizer
 from netease_organizer.classification_generation import generation_lease,publish_exports,require_unexecuted
+from netease_organizer.classification_sources import GenerationInputs
 
 
 _UNRESOLVED_CONFLICT_FLAGS = frozenset({
@@ -47,18 +48,20 @@ def _conflict_evidence(data, count):
 
 def build_exports(root):
     a=root/'artifacts'
-    snap=json.loads((a/'全库分类-账号基线.json').read_text(encoding='utf-8'))['snapshot']
+    inputs=GenerationInputs(a)
+    snap=inputs.json('全库分类-账号基线.json')['snapshot']
     source=snap['liked'];tracks=source['tracks']
     if source['track_count']!=len(tracks) or not source['membership_complete']:
         raise ValueError('当前分类要求完整歌曲全集。')
-    rows=validate_rows(sum([json.loads((a/f'分类判断-分块{i:02}.json').read_text(encoding='utf-8')) for i in range(1,4)],[]),len(tracks))
-    cache=json.loads((a/'全库分类-歌词特征.json').read_text(encoding='utf-8'))['tracks']
-    historical=json.loads((a/'网易云本地歌单快照.json').read_text(encoding='utf-8')).get('tracks',{})
+    rows=validate_rows(sum([inputs.json(f'分类判断-分块{i:02}.json') for i in range(1,4)],[]),len(tracks))
+    cache=inputs.json('全库分类-歌词特征.json')['tracks']
+    historical=inputs.json('网易云本地歌单快照.json').get('tracks',{})
+    inputs.validate_tracks(tracks,historical)
     reviews={};conflicts={};explicitly_resolved=set()
     for i in range(1,4):
-        path=a/f'分类语言核验{i:02}.json'
-        if not path.exists():continue
-        data=json.loads(path.read_text(encoding='utf-8'))
+        data=inputs.json(f'分类语言核验{i:02}.json',optional=True)
+        if data is None:continue
+        inputs.validate_review(data,tracks,historical)
         additions = _conflict_evidence(data, len(tracks))
         if conflicts.keys() & additions.keys():
             raise ValueError('语言复核补充证据位置重复。')
@@ -157,6 +160,7 @@ def build_exports(root):
         ('喜欢的音乐-分类明细.csv',csv_text,''),
         ('喜欢的音乐-分类清单.md','\n'.join(md)+'\n',None),
         ('分类整理计划.json',json.dumps(plan,ensure_ascii=False,indent=2)+'\n',None)]
+    inputs.verify_unchanged()
     return plan,summary,outputs
 
 

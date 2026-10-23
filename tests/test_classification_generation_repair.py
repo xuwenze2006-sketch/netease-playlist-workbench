@@ -75,6 +75,10 @@ class ClassificationGenerationRepairTests(unittest.TestCase):
         }
         for name, value in inputs.items():
             (artifacts / name).write_text(json.dumps(value, ensure_ascii=False), encoding='utf-8')
+        for i in range(1, 4):
+            (artifacts / f'分类输入-分块{i:02}.jsonl').write_text(
+                json.dumps([1, '模拟录音', ['模拟艺人'], '', None, True], ensure_ascii=False) + '\n'
+                if i == 1 else '', encoding='utf-8')
         return SimpleNamespace(root=root, artifacts=artifacts, cli=cli, controller=controller,
                                inputs=self.bytes_in(artifacts), account=account, liked=liked)
 

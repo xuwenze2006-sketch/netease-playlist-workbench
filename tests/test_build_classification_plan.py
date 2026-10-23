@@ -52,6 +52,10 @@ class BuildClassificationPlanTests(unittest.TestCase):
         }
         for name, value in inputs.items():
             (artifacts / name).write_text(json.dumps(value, ensure_ascii=False), encoding='utf-8')
+        for i in range(1, 4):
+            (artifacts / f'分类输入-分块{i:02}.jsonl').write_text(
+                json.dumps([1, '模拟录音', ['模拟艺人'], '', None, True], ensure_ascii=False) + '\n'
+                if i == 1 else '', encoding='utf-8')
         return root
 
     def invoke(self, root):
@@ -252,6 +256,62 @@ class BuildClassificationPlanTests(unittest.TestCase):
                     self.invoke(root)
                 self.assertEqual({p.name: p.read_bytes() for p in artifacts.iterdir()}, before)
 
+    def test_misaligned_original_input_refuses_legacy_positional_review_without_outputs(self):
+        root = self.fixture({'position': 1, 'language': 'en', 'notes': '另一录音的复核'})
+        artifacts = root / 'artifacts'
+        (artifacts / '分类输入-分块01.jsonl').write_text(json.dumps(
+            [1, '原来核对的另一录音', ['模拟艺人'], '', None, True], ensure_ascii=False), encoding='utf-8')
+        before = {p.name: p.read_bytes() for p in artifacts.iterdir()}
+        with self.assertRaises(ValueError):
+            self.invoke(root)
+        self.assertEqual({p.name: p.read_bytes() for p in artifacts.iterdir()}, before)
+
+    def test_missing_original_input_refuses_without_inventing_identity(self):
+        root = self.fixture({'position': 1, 'language': 'en', 'notes': '具体录音依据'})
+        artifacts = root / 'artifacts'
+        (artifacts / '分类输入-分块01.jsonl').unlink()
+        before = {p.name: p.read_bytes() for p in artifacts.iterdir()}
+        with self.assertRaises(ValueError):
+            self.invoke(root)
+        self.assertEqual({p.name: p.read_bytes() for p in artifacts.iterdir()}, before)
+
+    def test_declared_review_source_scope_or_name_mismatch_refuses_before_publication(self):
+        valid_entry = {'position': 1, 'language': 'en', 'confidence': 'high', 'notes': '具体语言依据'}
+        cases = [
+            {'recommendations': [valid_entry], 'sources': {'全库分类-歌词特征.json': '0' * 64}},
+            {'recommendations': [valid_entry], 'scope': {'start': 2, 'end': 2, 'count': 1}},
+            {'recommendations': [{**valid_entry, 'name': '另一首歌'}]},
+            {'recommendations': [], 'conflicts': [{'position': 1, 'name': '另一首歌',
+                                                 'reason': '不得转给不同录音', 'flags': ['recording_version_review']}]},
+        ]
+        for review in cases:
+            with self.subTest(review=review):
+                root = self.fixture(valid_entry, wrapped=True)
+                artifacts = root / 'artifacts'
+                (artifacts / '分类语言核验01.json').write_text(json.dumps(review, ensure_ascii=False), encoding='utf-8')
+                before = {p.name: p.read_bytes() for p in artifacts.iterdir()}
+                with self.assertRaises(ValueError):
+                    self.invoke(root)
+                self.assertEqual({p.name: p.read_bytes() for p in artifacts.iterdir()}, before)
+
+    def test_source_change_during_build_refuses_before_any_exports(self):
+        root = self.fixture({'position': 1, 'language': 'en', 'notes': '具体录音依据'})
+        artifacts = root / 'artifacts'
+        real_infer = builder.infer_language
+
+        def infer_then_change(*args):
+            value = real_infer(*args)
+            with (artifacts / '全库分类-歌词特征.json').open('a', encoding='utf-8') as stream:
+                stream.write(' ')
+            return value
+
+        with patch.object(builder, 'infer_language', side_effect=infer_then_change):
+            with self.assertRaises(ValueError):
+                self.invoke(root)
+        for name in ('分类整理计划.json', '全库分类-逐曲结果.json', '全库分类-需复核录音.json',
+                     '喜欢的音乐-分类明细.csv', '喜欢的音乐-分类清单.md'):
+            self.assertFalse((artifacts / name).exists())
+
     def test_csv_text_fields_escape_hidden_and_fullwidth_formula_prefixes(self):
         cases = (
             ('=1+1', "'=1+1"), ('+1+1', "'+1+1"),
@@ -280,6 +340,8 @@ class BuildClassificationPlanTests(unittest.TestCase):
         track = baseline['snapshot']['liked']['tracks'][0]
         track.update(name=value, artists=[{'name': value}])
         baseline_path.write_text(json.dumps(baseline, ensure_ascii=False), encoding='utf-8')
+        (artifacts / '分类输入-分块01.jsonl').write_text(json.dumps(
+            [1, value, [value], '', None, True], ensure_ascii=False) + '\n', encoding='utf-8')
         judgment_path = artifacts / '分类判断-分块01.json'
         judgment = json.loads(judgment_path.read_text(encoding='utf-8'))
         judgment[0][5] = value
